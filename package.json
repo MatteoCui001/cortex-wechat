@@ -1,0 +1,19 @@
+{
+  "name": "cortex-wechat",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": [
+    "packages/*",
+    "apps/*",
+    "skills/*"
+  ],
+  "scripts": {
+    "test": "bun test",
+    "start:ilink": "bun apps/ilink-agent/src/main.ts",
+    "typecheck": "bun x tsc --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0",
+    "@types/bun": "latest"
+  }
+}

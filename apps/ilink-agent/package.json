@@ -1,0 +1,16 @@
+{
+  "name": "@cortex-wechat/ilink-agent",
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "start": "bun src/main.ts",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@cortex-wechat/core": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0",
+    "@types/bun": "latest"
+  }
+}
