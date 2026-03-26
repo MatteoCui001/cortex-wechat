@@ -20,6 +20,7 @@ import {
 } from "./ilink-api";
 import { log, logError } from "./logger";
 import { doctor, runDoctorCli } from "./doctor";
+import { loadRecipient, saveRecipient } from "./recipient";
 
 // --- Config ---
 
@@ -30,6 +31,7 @@ const DEDUP_PATH = join(STATE_DIR, "seen_ids.json");
 
 const CORTEX_BASE_URL = process.env.CORTEX_BASE_URL ?? "http://127.0.0.1:8420/api/v1";
 const CORTEX_WORKSPACE = process.env.CORTEX_WORKSPACE ?? "default";
+const DISPATCH_INTERVAL_MS = Number(process.env.DISPATCH_INTERVAL_MS) || 60_000; // 1 min default
 
 // --- State ---
 
@@ -147,6 +149,9 @@ async function handleMessage(msg: ILinkMessage, router: CommandRouter) {
   seenIds.add(msg.message_id);
   saveSeenIds();
 
+  // Track primary recipient for push notifications
+  saveRecipient(msg.from_user_id, msg.context_token);
+
   const text = extractText(msg);
   if (!text) {
     log("route", `非文本消息 (type=${msg.item_list[0]?.type ?? "?"}), 回复不支持提示`);
@@ -194,6 +199,55 @@ async function handleMessage(msg: ILinkMessage, router: CommandRouter) {
   }
 }
 
+// --- Notification dispatch loop ---
+
+async function dispatchLoop(client: CortexClient) {
+  log("system", `通知推送循环启动 (间隔 ${DISPATCH_INTERVAL_MS / 1000}s)`);
+
+  while (true) {
+    await new Promise((r) => setTimeout(r, DISPATCH_INTERVAL_MS));
+
+    try {
+      const recipient = loadRecipient();
+      if (!recipient) {
+        // No active session — skip silently
+        continue;
+      }
+
+      const pending = await client.getDeliverableNotifications(5);
+      if (pending.length === 0) continue;
+
+      log("send", `推送 ${pending.length} 条通知给 ${recipient.user_id.slice(0, 8)}`);
+
+      for (const notif of pending) {
+        const marker = notif.priority === "high" ? "!!!" : notif.priority === "medium" ? " ! " : "   ";
+        const text = `[${marker}] ${notif.short_id}  ${notif.title}`;
+
+        const ok = await sendMessage(
+          account!,
+          recipient.user_id,
+          recipient.context_token,
+          text,
+        );
+
+        if (ok) {
+          // Mark as delivered in Cortex
+          const result = await client.deliverNotification(notif.id);
+          if (result.ok) {
+            log("send", `通知 ${notif.short_id} 推送并标记已投递`);
+          } else {
+            logError("cortex_api", `通知 ${notif.short_id} 投递标记失败: ${result.error}`);
+          }
+        } else {
+          logError("send", `通知 ${notif.short_id} 推送发送失败`);
+        }
+      }
+    } catch (err) {
+      logError("send", "推送循环错误", err);
+    }
+  }
+}
+
 // --- Entry ---
 
 async function main() {
@@ -226,7 +280,12 @@ async function main() {
   }
 
   const router = new CommandRouter(client);
-  await pollLoop(router);
+
+  // Dual loop: message poll + notification dispatch
+  await Promise.all([
+    pollLoop(router),
+    dispatchLoop(client),
+  ]);
 }
 
 main().catch((err) => {

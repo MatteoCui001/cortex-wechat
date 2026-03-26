@@ -87,6 +87,21 @@ export class CortexClient {
     return { ok: true };
   }
 
+  /** GET /notifications — deliverable (pending) for push dispatch */
+  async getDeliverableNotifications(limit = 10): Promise<NotificationSummary[]> {
+    return this.getNotifications("pending", limit, false);
+  }
+
+  /** POST /notifications/{id}/deliver — mark as delivered via external channel */
+  async deliverNotification(id: string): Promise<{ ok: boolean; error?: string }> {
+    const res = await this.post(`/notifications/${id}/deliver`, {});
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      return { ok: false, error: (body as any).detail ?? `HTTP ${res.status}` };
+    }
+    return { ok: true };
+  }
+
   /** GET /health */
   async health(): Promise<boolean> {
     try {
