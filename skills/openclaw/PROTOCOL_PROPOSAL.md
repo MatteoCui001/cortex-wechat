@@ -1,120 +1,93 @@
-# OpenClaw Skill 调用协议提议
+# OpenClaw Skill 调用协议 — 已确认
 
-> 状态：提议中，待确认
+> 状态：已确认
 > 日期：2026-03-26
-> 目的：钉死 OpenClaw 调用 Cortex skill 的接口
+> 来源：openclaw/openclaw 仓库文档 (docs/concepts/system-prompt.md, docs/tools/skills.md)
 
 ---
 
-## 背景
+## 核心发现：不是脚本调用，是 LLM 上下文注入
 
-Cortex 作为 OpenClaw 的一个 skill，需要在用户通过微信与 OpenClaw 交互时被调用。
-本文档提出 Cortex skill 的调用协议，供 OpenClaw 团队确认或修正。
+之前假设的协议（stdin/stdout JSON 子进程调用）是错误的。
 
----
+**实际机制：SKILL.md 直接注入 LLM 上下文，LLM 按指令操作。**
 
-## 提议协议：stdin/stdout JSON
+```
+用户发消息
+  -> OpenClaw agent (LLM) 判断需要用 cortex skill
+  -> LLM 用 read 工具读取 SKILL.md
+  -> LLM 按 SKILL.md 的自然语言指令执行
+  -> LLM 用 exec/bash 工具调用 curl 访问 Cortex REST API
+  -> LLM 将结果格式化后回复用户
+```
 
-### 调用方式
+### 具体流程
 
-OpenClaw 通过子进程调用 skill 脚本，传入 JSON 到 stdin，读取 JSON 从 stdout。
+1. **启动时过滤**：OpenClaw 扫描 skill 目录（`~/.openclaw/skills/`），
+   检查 SKILL.md frontmatter 的前置条件（`requires.bins`, `requires.env`, `os`），
+   合格的注入精简 XML 列表到 system prompt
+
+2. **触发时读取**：LLM 判断用户消息匹配某个 skill 的 description，
+   用 `read` 工具加载完整 SKILL.md
+
+3. **执行**：LLM 按 SKILL.md 里的指令操作（调 CLI、curl 等）
+
+### 这意味着
+
+| 之前假设 | 实际情况 |
+|----------|----------|
+| handler.ts 脚本被子进程调用 | 不需要脚本，SKILL.md 就是全部接口 |
+| stdin JSON 输入 | LLM 直接从用户消息获取意图 |
+| stdout JSON 输出 | LLM 直接格式化回复 |
+| 需要适配 OpenClaw runtime | 只需要写好 SKILL.md 指令 |
+
+### 对 cortex-wechat 的影响
+
+1. `skills/openclaw/scripts/handler.ts` 可以删除 — 不会被调用
+2. `SKILL.md` 是唯一需要的文件
+3. SKILL.md 里写清楚 curl 命令和使用指南即可
+4. `packages/core` 的 `CommandRouter` 对 Mode B 不适用（LLM 自己做路由）
+5. `handler.test.ts` 的 contract fixture 测试仍有参考价值，但不再是协议验证
+
+### 安装方式
 
 ```bash
-echo '<input_json>' | bun scripts/handler.ts
+# 用户把 skill 目录复制到 OpenClaw skills 路径
+cp -r skills/openclaw ~/.openclaw/skills/cortex
 ```
 
-### 输入 (stdin)
-
-```json
-{
-  "text": "用户发送的文本",
-  "user_id": "微信用户 ID",
-  "session_id": "会话 ID",
-  "message_id": "消息唯一 ID",
-  "context_token": "iLink context token (可选)"
-}
-```
-
-| 字段 | 类型 | 必需 | 说明 |
-|------|------|------|------|
-| `text` | string | 是 | 用户消息文本 |
-| `user_id` | string | 是 | 发送者标识 |
-| `session_id` | string | 否 | 会话标识，用于上下文关联 |
-| `message_id` | string | 否 | 消息唯一 ID，用于去重 |
-| `context_token` | string | 否 | iLink 回复路由 token |
-
-### 输出 (stdout)
-
-```json
-{
-  "reply_text": "回复给用户的文本",
-  "actions_taken": ["ingest"],
-  "pending_notifications": [],
-  "errors": []
-}
-```
-
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `reply_text` | string | 发送给用户的回复文本 |
-| `actions_taken` | string[] | 执行了哪些动作（用于日志/追踪） |
-| `pending_notifications` | object[] | 待处理通知摘要 |
-| `errors` | string[] | 错误信息（空 = 成功） |
-
-### 错误处理
-
-| 场景 | exit code | stdout |
-|------|-----------|--------|
-| 成功 | 0 | 正常 JSON |
-| 输入解析失败 | 1 | `{"reply_text":"Invalid input","errors":["parse_error"]}` |
-| Cortex API 不可达 | 0 | `{"reply_text":"Cortex 不可用","errors":["cortex_unreachable"]}` |
-| 脚本崩溃 | 非 0 | stderr 有错误信息 |
+或通过 GitHub URL 安装（如果 OpenClaw 支持）。
 
 ---
 
-## 需要确认的 4 个问题
+## 4 个原始问题的答案
 
 ### 1. Skill 调用方式
-
-| 我们的假设 | 需要确认 |
-|------------|----------|
-| 子进程 + stdin JSON | 是否是这种方式？还是 HTTP callback、消息队列、或其他？ |
-| 每次用户消息调用一次 | 是否支持长驻进程？还是必须是一次性脚本？ |
-| Bun 作为运行时 | OpenClaw 环境是否有 Bun？需要 Node？还是只支持 Python？ |
+- **不是子进程**，是 LLM 上下文注入
+- LLM 用 `read` 工具读 SKILL.md，然后用 `exec`/`bash` 工具执行指令
 
 ### 2. 输入 Payload
-
-| 我们的假设 | 需要确认 |
-|------------|----------|
-| 上述 5 个字段 | 实际传入的字段有哪些？有额外字段吗（如 attachments, group_id）？ |
-| 纯文本消息 | 是否也会传入图片/文件的处理请求？ |
-| UTF-8 JSON | 编码和格式是否有特殊要求？ |
+- 没有固定 payload schema
+- LLM 从用户自然语言消息中理解意图
 
 ### 3. 输出 Payload
-
-| 我们的假设 | 需要确认 |
-|------------|----------|
-| 上述 4 个字段 | OpenClaw 期望什么样的 response schema？ |
-| 纯文本回复 | 是否支持富文本/卡片/按钮？ |
-| 单次回复 | 能否返回多条消息？ |
+- 没有固定 response schema
+- LLM 直接生成自然语言回复
 
 ### 4. 超时与重试
-
-| 我们的假设 | 需要确认 |
-|------------|----------|
-| 无硬性超时 | skill 执行有超时限制吗？多少秒？ |
-| 无重试 | 失败后 OpenClaw 会重试吗？有幂等 key 吗？ |
-| exit code 判断成败 | OpenClaw 怎么判断 skill 执行成功/失败？ |
+- 受 OpenClaw agent 的整体 turn 超时限制
+- 没有 skill 级别的重试机制
+- 错误处理由 LLM 根据 SKILL.md 指令决定
 
 ---
 
-## 如果协议不是 stdin/stdout
+## Claude Code 的 Skill 机制
 
-如果 OpenClaw 用的不是子进程调用，而是：
+经确认，Claude Code 的 skill 机制和 OpenClaw 完全相同：
+- `SKILL.md` 注入 LLM 上下文
+- LLM 按指令执行
+- 不是脚本调用
 
-- **HTTP callback**: 我们改 `handler.ts` 为 HTTP server，监听一个端口
-- **SDK/函数调用**: 我们导出一个函数，被 OpenClaw runtime import
-- **消息队列**: 我们订阅 topic，发布回复
-
-无论哪种方式，只需要改 `skills/openclaw/scripts/handler.ts` 这一个文件。
-`packages/core` 的 `CommandRouter` 不需要变。
+因此 `skills/claude-code/` 的 4 个脚本（ingest.ts, inbox.ts, feedback.ts, health.ts）
+作为独立 CLI 工具仍然有用，但不会被 Claude Code 的 skill 机制自动调用。
+它们可以被 SKILL.md 里的指令引用为 `exec` 目标。
