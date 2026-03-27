@@ -4,7 +4,7 @@
 export { CortexClient } from "./cortex-client";
 export { CommandRouter } from "./router";
 export type { RouterOptions } from "./router";
-export { IntentExtractor, MessageHistory } from "./intent-extractor";
+export { IntentExtractor, MessageHistory, type LLMFailReason } from "./intent-extractor";
 export { splitReply } from "./reply-formatter";
 export type {
   InboundMessage,

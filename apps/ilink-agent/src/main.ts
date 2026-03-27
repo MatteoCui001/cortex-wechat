@@ -8,7 +8,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
 import { CommandRouter, CortexClient, splitReply } from "@cortex-wechat/core";
-import type { InboundMessage } from "@cortex-wechat/core";
+import type { InboundMessage, LLMConfig } from "@cortex-wechat/core";
 import {
   type ILinkAccount,
   type ILinkMessage,
@@ -32,6 +32,22 @@ const DEDUP_PATH = join(STATE_DIR, "seen_ids.json");
 const CORTEX_BASE_URL = process.env.CORTEX_BASE_URL ?? "http://127.0.0.1:8420/api/v1";
 const CORTEX_WORKSPACE = process.env.CORTEX_WORKSPACE ?? "default";
 const DISPATCH_INTERVAL_MS = Number(process.env.DISPATCH_INTERVAL_MS) || 60_000; // 1 min default
+
+// LLM semantic routing — optional, falls back to regex when absent
+const LLM_BASE_URL = process.env.LLM_BASE_URL;
+const LLM_API_KEY = process.env.LLM_API_KEY;
+const LLM_MODEL = process.env.LLM_MODEL;
+const LLM_TIMEOUT_MS = Number(process.env.LLM_TIMEOUT_MS) || 6000;
+
+function buildLLMConfig(): LLMConfig | undefined {
+  if (!LLM_BASE_URL || !LLM_API_KEY) return undefined;
+  return {
+    base_url: LLM_BASE_URL,
+    api_key: LLM_API_KEY,
+    model: LLM_MODEL,
+    timeout_ms: LLM_TIMEOUT_MS,
+  };
+}
 
 // --- State ---
 
@@ -278,7 +294,23 @@ async function main() {
     log("cortex_api", `连接正常: ${CORTEX_BASE_URL}`);
   }
 
-  const router = new CommandRouter(client);
+  const llmConfig = buildLLMConfig();
+  const router = new CommandRouter(client, llmConfig ? { llm: llmConfig } : undefined);
+
+  if (router.llmEnabled) {
+    log("system", `路由模式: LLM + regex fallback (model=${llmConfig!.model ?? "default"}, timeout=${llmConfig!.timeout_ms}ms)`);
+  } else {
+    log("system", "路由模式: regex-only (设置 LLM_BASE_URL + LLM_API_KEY 启用语义路由)");
+  }
+
+  // Wire up LLM event logging
+  router.onLLMEvent = (event, reason) => {
+    if (event === "llm_success") {
+      log("route", "LLM 语义路由命中");
+    } else {
+      log("route", `LLM 降级到 regex (${reason ?? "unknown"})`);
+    }
+  };
 
   // Dual loop: message poll + notification dispatch
   await Promise.all([

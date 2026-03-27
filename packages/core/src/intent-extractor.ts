@@ -30,9 +30,22 @@ Respond with ONLY a JSON object (no markdown, no explanation):
   "verdict": "useful|not_useful|wrong|save_for_later, or omit"
 }`;
 
-/** Recent messages kept for cross-message correlation */
+/** LLM extraction failure reason — for structured logging */
+export type LLMFailReason = "llm_timeout" | "llm_http_error" | "llm_parse_error" | "llm_empty_response";
+
+interface Entry {
+  text: string;
+  timestamp: number;
+}
+
+/**
+ * Session-isolated message history for cross-message correlation.
+ *
+ * Maintains a separate FIFO buffer per session key (session_id or user_id).
+ * Each buffer holds at most `maxSize` entries within a `ttlMinutes` window.
+ */
 export class MessageHistory {
-  private buffer: Array<{ text: string; timestamp: number }> = [];
+  private sessions = new Map<string, Entry[]>();
   private maxSize: number;
   private ttlMs: number;
 
@@ -41,39 +54,74 @@ export class MessageHistory {
     this.ttlMs = ttlMinutes * 60_000;
   }
 
-  push(text: string): void {
-    this.buffer.push({ text, timestamp: Date.now() });
-    if (this.buffer.length > this.maxSize) this.buffer.shift();
+  /** Derive a session key from a message (session_id preferred, fallback user_id) */
+  static keyFor(msg: InboundMessage): string {
+    return msg.session_id || msg.user_id;
   }
 
-  /** Return recent messages as context string, excluding expired ones */
-  getContext(): string {
+  push(key: string, text: string): void {
+    let buf = this.sessions.get(key);
+    if (!buf) {
+      buf = [];
+      this.sessions.set(key, buf);
+    }
+    buf.push({ text, timestamp: Date.now() });
+    if (buf.length > this.maxSize) buf.shift();
+  }
+
+  /** Return recent messages as context string, excluding expired and current */
+  getContext(key: string): string {
+    const buf = this.sessions.get(key);
+    if (!buf || buf.length <= 1) return "";
     const cutoff = Date.now() - this.ttlMs;
-    const recent = this.buffer.filter((m) => m.timestamp > cutoff);
+    const recent = buf.filter((m) => m.timestamp > cutoff);
     if (recent.length <= 1) return "";
-    // Exclude the last one (it's the current message)
     return recent
       .slice(0, -1)
       .map((m) => m.text)
       .join("\n");
   }
+
+  /** Number of tracked sessions (for monitoring) */
+  get sessionCount(): number {
+    return this.sessions.size;
+  }
+
+  /** Evict sessions with no recent activity (call periodically to prevent leaks) */
+  gc(): void {
+    const cutoff = Date.now() - this.ttlMs;
+    for (const [key, buf] of this.sessions) {
+      const last = buf[buf.length - 1];
+      if (!last || last.timestamp <= cutoff) {
+        this.sessions.delete(key);
+      }
+    }
+  }
 }
+
+const DEFAULT_TIMEOUT_MS = 6000;
 
 export class IntentExtractor {
   private config: LLMConfig;
   private model: string;
+  private timeoutMs: number;
 
   constructor(config: LLMConfig) {
     this.config = config;
     this.model = config.model ?? "anthropic/claude-haiku-4.5";
+    this.timeoutMs = config.timeout_ms ?? DEFAULT_TIMEOUT_MS;
   }
 
   /**
    * Extract intent from a message using LLM.
-   * Returns null if LLM call fails or response is unparseable.
+   * Returns null (+ reason) if LLM call fails or response is unparseable.
    */
-  async extract(msg: InboundMessage, history?: MessageHistory): Promise<ParsedIntent | null> {
-    const recentContext = history?.getContext();
+  async extract(
+    msg: InboundMessage,
+    history?: MessageHistory,
+  ): Promise<{ intent: ParsedIntent; reason?: never } | { intent: null; reason: LLMFailReason }> {
+    const key = MessageHistory.keyFor(msg);
+    const recentContext = history?.getContext(key);
     let userContent = msg.text;
     if (recentContext) {
       userContent = `[Recent messages]\n${recentContext}\n\n[Current message]\n${msg.text}`;
@@ -81,40 +129,57 @@ export class IntentExtractor {
 
     try {
       const baseUrl = this.config.base_url.replace(/\/$/, "");
-      const res = await fetch(`${baseUrl}/chat/completions`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${this.config.api_key}`,
-        },
-        body: JSON.stringify({
-          model: this.model,
-          messages: [
-            { role: "system", content: SYSTEM_PROMPT },
-            { role: "user", content: userContent },
-          ],
-          temperature: 0,
-          max_tokens: 200,
-        }),
-      });
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), this.timeoutMs);
 
-      if (!res.ok) return null;
+      let res: Response;
+      try {
+        res = await fetch(`${baseUrl}/chat/completions`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${this.config.api_key}`,
+          },
+          body: JSON.stringify({
+            model: this.model,
+            messages: [
+              { role: "system", content: SYSTEM_PROMPT },
+              { role: "user", content: userContent },
+            ],
+            temperature: 0,
+            max_tokens: 200,
+          }),
+          signal: controller.signal,
+        });
+      } finally {
+        clearTimeout(timer);
+      }
+
+      if (!res.ok) {
+        return { intent: null, reason: "llm_http_error" };
+      }
 
       const data = (await res.json()) as any;
       const text = data.choices?.[0]?.message?.content?.trim();
-      if (!text) return null;
+      if (!text) {
+        return { intent: null, reason: "llm_empty_response" };
+      }
 
       // Strip markdown code fences if present
       const cleaned = text.replace(/^```(?:json)?\s*/, "").replace(/\s*```$/, "");
       const parsed = JSON.parse(cleaned) as ParsedIntent;
 
-      // Validate intent is one of expected values
       const validIntents = ["help", "inbox", "ack", "read", "dismiss", "feedback", "ingest_url", "ingest_text"];
-      if (!validIntents.includes(parsed.intent)) return null;
+      if (!validIntents.includes(parsed.intent)) {
+        return { intent: null, reason: "llm_parse_error" };
+      }
 
-      return parsed;
-    } catch {
-      return null;
+      return { intent: parsed };
+    } catch (err: any) {
+      if (err?.name === "AbortError") {
+        return { intent: null, reason: "llm_timeout" };
+      }
+      return { intent: null, reason: "llm_parse_error" };
     }
   }
 }

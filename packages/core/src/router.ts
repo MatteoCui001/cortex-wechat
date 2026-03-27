@@ -10,7 +10,7 @@
  * and translate OutboundReply back.
  */
 import { CortexClient } from "./cortex-client";
-import { IntentExtractor, MessageHistory } from "./intent-extractor";
+import { IntentExtractor, MessageHistory, type LLMFailReason } from "./intent-extractor";
 import type { InboundMessage, LLMConfig, NotificationSummary, OutboundReply, ParsedIntent } from "./types";
 
 // ---------------------------------------------------------------------------
@@ -48,6 +48,8 @@ export class CommandRouter {
   private client: CortexClient;
   private extractor: IntentExtractor | null = null;
   private history: MessageHistory;
+  /** Optional callback for LLM routing events (for structured logging) */
+  onLLMEvent?: (event: "llm_success" | "llm_fallback_regex", reason?: LLMFailReason) => void;
 
   constructor(client: CortexClient, opts?: RouterOptions) {
     this.client = client;
@@ -55,6 +57,11 @@ export class CommandRouter {
     if (opts?.llm) {
       this.extractor = new IntentExtractor(opts.llm);
     }
+  }
+
+  /** Whether LLM routing is enabled */
+  get llmEnabled(): boolean {
+    return this.extractor !== null;
   }
 
   /** Route a message and return a reply. */
@@ -67,16 +74,19 @@ export class CommandRouter {
     };
 
     const text = msg.text.trim();
-    this.history.push(text);
+    const key = MessageHistory.keyFor(msg);
+    this.history.push(key, text);
 
     try {
       // Tier 1: LLM intent extraction
       if (this.extractor) {
-        const intent = await this.extractor.extract(msg, this.history);
-        if (intent) {
-          return this.dispatchIntent(reply, intent, text);
+        const result = await this.extractor.extract(msg, this.history);
+        if (result.intent) {
+          this.onLLMEvent?.("llm_success");
+          return this.dispatchIntent(reply, result.intent, text);
         }
-        // LLM failed — fall through to regex
+        // LLM failed — fall through to regex with reason
+        this.onLLMEvent?.("llm_fallback_regex", result.reason);
       }
 
       // Tier 2: Regex fallback
