@@ -155,7 +155,11 @@ export async function sendMessage(
     }),
   });
   const data: any = await res.json();
-  return data.ret === 0;
+  // iLink may return ret !== 0 but still deliver; log for debugging
+  if (data.ret !== 0) {
+    console.error(`[iLink sendmessage] ret=${data.ret} errcode=${data.errcode ?? "?"} errmsg=${data.errmsg ?? JSON.stringify(data).slice(0, 200)}`);
+  }
+  return data.errcode === undefined || data.errcode === 0 || data.ret === 0;
 }
 
 // --- Extract text from message ---
