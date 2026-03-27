@@ -7,8 +7,8 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
-import { CommandRouter, CortexClient, splitReply } from "../../packages/core/src/index";
-import type { InboundMessage } from "../../packages/core/src/types";
+import { CommandRouter, CortexClient, splitReply } from "@cortex-wechat/core";
+import type { InboundMessage } from "@cortex-wechat/core";
 import {
   type ILinkAccount,
   type ILinkMessage,
