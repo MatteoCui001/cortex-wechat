@@ -3,10 +3,14 @@
  */
 export { CortexClient } from "./cortex-client";
 export { CommandRouter } from "./router";
+export type { RouterOptions } from "./router";
+export { IntentExtractor, MessageHistory } from "./intent-extractor";
 export { splitReply } from "./reply-formatter";
 export type {
   InboundMessage,
   OutboundReply,
   NotificationSummary,
   CortexConfig,
+  LLMConfig,
+  ParsedIntent,
 } from "./types";

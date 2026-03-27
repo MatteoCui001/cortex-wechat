@@ -1,12 +1,21 @@
 /**
  * Command router — maps user text to Cortex API actions.
  *
+ * Two-tier routing:
+ *   1. LLM intent extraction (when LLMConfig is provided)
+ *   2. Regex fallback (always available, used when LLM is absent or fails)
+ *
  * All platform-agnostic logic lives here. Adapters only translate
  * their platform's message format into InboundMessage, call route(),
  * and translate OutboundReply back.
  */
 import { CortexClient } from "./cortex-client";
-import type { InboundMessage, NotificationSummary, OutboundReply } from "./types";
+import { IntentExtractor, MessageHistory } from "./intent-extractor";
+import type { InboundMessage, LLMConfig, NotificationSummary, OutboundReply, ParsedIntent } from "./types";
+
+// ---------------------------------------------------------------------------
+// Regex patterns (fallback tier)
+// ---------------------------------------------------------------------------
 
 // URL regex: matches http(s) URLs, stopping at CJK characters and common
 // punctuation that signal the start of user commentary.
@@ -30,8 +39,23 @@ const FEEDBACK_MAP: Record<string, string> = {
   save_for_later: "save_for_later",
 };
 
+export interface RouterOptions {
+  /** Optional LLM config — when provided, enables semantic routing */
+  llm?: LLMConfig;
+}
+
 export class CommandRouter {
-  constructor(private client: CortexClient) {}
+  private client: CortexClient;
+  private extractor: IntentExtractor | null = null;
+  private history: MessageHistory;
+
+  constructor(client: CortexClient, opts?: RouterOptions) {
+    this.client = client;
+    this.history = new MessageHistory(5, 10);
+    if (opts?.llm) {
+      this.extractor = new IntentExtractor(opts.llm);
+    }
+  }
 
   /** Route a message and return a reply. */
   async route(msg: InboundMessage): Promise<OutboundReply> {
@@ -43,52 +67,122 @@ export class CommandRouter {
     };
 
     const text = msg.text.trim();
+    this.history.push(text);
 
     try {
-      // 1. Help
-      if (HELP_RE.test(text)) {
-        reply.reply_text = HELP_TEXT;
-        reply.actions_taken.push("help");
-        return reply;
+      // Tier 1: LLM intent extraction
+      if (this.extractor) {
+        const intent = await this.extractor.extract(msg, this.history);
+        if (intent) {
+          return this.dispatchIntent(reply, intent, text);
+        }
+        // LLM failed — fall through to regex
       }
 
-      // 2. Inbox
-      if (INBOX_RE.test(text)) {
-        return this.handleInbox(reply);
-      }
-
-      // 3. Ack / Read / Dismiss
-      const ackMatch = text.match(ACK_RE);
-      if (ackMatch) return this.handleTransition(reply, ackMatch[1], "ack");
-      const readMatch = text.match(READ_RE);
-      if (readMatch) return this.handleTransition(reply, readMatch[1], "read");
-      const dismissMatch = text.match(DISMISS_RE);
-      if (dismissMatch) return this.handleTransition(reply, dismissMatch[1], "dismiss");
-
-      // 4. Feedback
-      const feedbackMatch = text.match(FEEDBACK_RE);
-      if (feedbackMatch) {
-        const keyword = text.split(/\s+/)[0].toLowerCase();
-        const verdict = FEEDBACK_MAP[keyword] ?? "useful";
-        return this.handleFeedback(reply, feedbackMatch[1], verdict);
-      }
-
-      // 5. URL ingest
-      const urlMatch = (msg.url ?? text).match(URL_RE);
-      if (urlMatch) {
-        // Extract user commentary: everything outside the URL itself
-        const remainder = text.replace(urlMatch[0], "").trim();
-        return this.handleIngest(reply, { url: urlMatch[0], annotation: remainder || undefined });
-      }
-
-      // 6. Plain text ingest
-      return this.handleIngest(reply, { content: text });
+      // Tier 2: Regex fallback
+      return this.regexRoute(reply, msg, text);
     } catch (err: any) {
       reply.errors.push(err.message ?? String(err));
       reply.reply_text = `处理失败: ${err.message ?? err}`;
       return reply;
     }
   }
+
+  // ---------------------------------------------------------------------------
+  // Tier 1: dispatch from LLM-parsed intent
+  // ---------------------------------------------------------------------------
+
+  private async dispatchIntent(
+    reply: OutboundReply,
+    intent: ParsedIntent,
+    originalText: string,
+  ): Promise<OutboundReply> {
+    switch (intent.intent) {
+      case "help":
+        reply.reply_text = HELP_TEXT;
+        reply.actions_taken.push("help");
+        return reply;
+
+      case "inbox":
+        return this.handleInbox(reply);
+
+      case "ack":
+        return this.handleTransition(reply, intent.target_id!, "ack");
+      case "read":
+        return this.handleTransition(reply, intent.target_id!, "read");
+      case "dismiss":
+        return this.handleTransition(reply, intent.target_id!, "dismiss");
+
+      case "feedback":
+        return this.handleFeedback(reply, intent.target_id!, intent.verdict ?? "useful");
+
+      case "ingest_url":
+        return this.handleIngest(reply, {
+          url: intent.url,
+          annotation: intent.annotation,
+          content: intent.url ? undefined : originalText,
+        });
+
+      case "ingest_text":
+        return this.handleIngest(reply, { content: intent.content || originalText });
+
+      default:
+        // Unknown intent — treat as plain text ingest
+        return this.handleIngest(reply, { content: originalText });
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Tier 2: regex fallback
+  // ---------------------------------------------------------------------------
+
+  private async regexRoute(
+    reply: OutboundReply,
+    msg: InboundMessage,
+    text: string,
+  ): Promise<OutboundReply> {
+    // 1. Help
+    if (HELP_RE.test(text)) {
+      reply.reply_text = HELP_TEXT;
+      reply.actions_taken.push("help");
+      return reply;
+    }
+
+    // 2. Inbox
+    if (INBOX_RE.test(text)) {
+      return this.handleInbox(reply);
+    }
+
+    // 3. Ack / Read / Dismiss
+    const ackMatch = text.match(ACK_RE);
+    if (ackMatch) return this.handleTransition(reply, ackMatch[1], "ack");
+    const readMatch = text.match(READ_RE);
+    if (readMatch) return this.handleTransition(reply, readMatch[1], "read");
+    const dismissMatch = text.match(DISMISS_RE);
+    if (dismissMatch) return this.handleTransition(reply, dismissMatch[1], "dismiss");
+
+    // 4. Feedback
+    const feedbackMatch = text.match(FEEDBACK_RE);
+    if (feedbackMatch) {
+      const keyword = text.split(/\s+/)[0].toLowerCase();
+      const verdict = FEEDBACK_MAP[keyword] ?? "useful";
+      return this.handleFeedback(reply, feedbackMatch[1], verdict);
+    }
+
+    // 5. URL ingest
+    const urlMatch = (msg.url ?? text).match(URL_RE);
+    if (urlMatch) {
+      const remainder = text.replace(urlMatch[0], "").trim();
+      return this.handleIngest(reply, { url: urlMatch[0], annotation: remainder || undefined });
+    }
+
+    // 6. Plain text ingest
+    return this.handleIngest(reply, { content: text });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Shared handlers
+  // ---------------------------------------------------------------------------
 
   private async handleInbox(reply: OutboundReply): Promise<OutboundReply> {
     const notifications = await this.client.getNotifications("pending,delivered", 20);
