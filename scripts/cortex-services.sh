@@ -49,22 +49,31 @@ cmd_uninstall() {
 
 cmd_start() {
   ensure_log_dirs
-  # Cortex first, then ilink-agent
+  local uid
+  uid=$(id -u)
+  # Load plists (registers with launchd)
   launchctl load "$LAUNCH_AGENTS/$CORTEX_LABEL.plist" 2>/dev/null || true
-  echo "Loaded $CORTEX_LABEL"
-  sleep 2
+  # Kickstart forces immediate process spawn
+  launchctl kickstart "gui/$uid/$CORTEX_LABEL" 2>/dev/null || true
+  echo "Started $CORTEX_LABEL"
+  sleep 3
   launchctl load "$LAUNCH_AGENTS/$ILINK_LABEL.plist" 2>/dev/null || true
-  echo "Loaded $ILINK_LABEL"
+  launchctl kickstart "gui/$uid/$ILINK_LABEL" 2>/dev/null || true
+  echo "Started $ILINK_LABEL"
   echo ""
   cmd_status
 }
 
 cmd_stop() {
-  # ilink-agent first, then Cortex
+  local uid
+  uid=$(id -u)
+  # Kill processes first, then unload
+  launchctl kill SIGTERM "gui/$uid/$ILINK_LABEL" 2>/dev/null || true
   launchctl unload "$LAUNCH_AGENTS/$ILINK_LABEL.plist" 2>/dev/null || true
-  echo "Unloaded $ILINK_LABEL"
+  echo "Stopped $ILINK_LABEL"
+  launchctl kill SIGTERM "gui/$uid/$CORTEX_LABEL" 2>/dev/null || true
   launchctl unload "$LAUNCH_AGENTS/$CORTEX_LABEL.plist" 2>/dev/null || true
-  echo "Unloaded $CORTEX_LABEL"
+  echo "Stopped $CORTEX_LABEL"
 }
 
 cmd_restart() {
@@ -78,10 +87,16 @@ cmd_status() {
   echo ""
 
   # Cortex
-  if launchctl list "$CORTEX_LABEL" &>/dev/null; then
+  local cortex_line
+  cortex_line=$(launchctl list 2>/dev/null | grep "$CORTEX_LABEL" || true)
+  if [ -n "$cortex_line" ]; then
     local pid
-    pid=$(launchctl list "$CORTEX_LABEL" 2>/dev/null | awk 'NR==2{print $1}')
-    echo "  [RUNNING] $CORTEX_LABEL (pid: ${pid:-?})"
+    pid=$(echo "$cortex_line" | awk '{print $1}')
+    if [ "$pid" = "-" ]; then
+      echo "  [LOADED]  $CORTEX_LABEL (not running)"
+    else
+      echo "  [RUNNING] $CORTEX_LABEL (pid: $pid)"
+    fi
   else
     echo "  [STOPPED] $CORTEX_LABEL"
   fi
@@ -96,10 +111,16 @@ cmd_status() {
   echo ""
 
   # ilink-agent
-  if launchctl list "$ILINK_LABEL" &>/dev/null; then
+  local ilink_line
+  ilink_line=$(launchctl list 2>/dev/null | grep "$ILINK_LABEL" || true)
+  if [ -n "$ilink_line" ]; then
     local pid2
-    pid2=$(launchctl list "$ILINK_LABEL" 2>/dev/null | awk 'NR==2{print $1}')
-    echo "  [RUNNING] $ILINK_LABEL (pid: ${pid2:-?})"
+    pid2=$(echo "$ilink_line" | awk '{print $1}')
+    if [ "$pid2" = "-" ]; then
+      echo "  [LOADED]  $ILINK_LABEL (not running)"
+    else
+      echo "  [RUNNING] $ILINK_LABEL (pid: $pid2)"
+    fi
   else
     echo "  [STOPPED] $ILINK_LABEL"
   fi
