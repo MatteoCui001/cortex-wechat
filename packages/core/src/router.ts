@@ -8,8 +8,9 @@
 import { CortexClient } from "./cortex-client";
 import type { InboundMessage, NotificationSummary, OutboundReply } from "./types";
 
-// URL regex: matches http(s) URLs in text
-const URL_RE = /https?:\/\/[^\s<>"']+/i;
+// URL regex: matches http(s) URLs, stopping at CJK characters and common
+// punctuation that signal the start of user commentary.
+const URL_RE = /https?:\/\/[^\s<>"'\u4e00-\u9fff\u3000-\u303f\uff00-\uffef]+/i;
 
 // Command patterns (Chinese + English)
 const INBOX_RE = /^(?:收件箱|inbox|通知)$/i;
@@ -75,7 +76,9 @@ export class CommandRouter {
       // 5. URL ingest
       const urlMatch = (msg.url ?? text).match(URL_RE);
       if (urlMatch) {
-        return this.handleIngest(reply, { url: urlMatch[0], annotation: text !== urlMatch[0] ? text : undefined });
+        // Extract user commentary: everything outside the URL itself
+        const remainder = text.replace(urlMatch[0], "").trim();
+        return this.handleIngest(reply, { url: urlMatch[0], annotation: remainder || undefined });
       }
 
       // 6. Plain text ingest

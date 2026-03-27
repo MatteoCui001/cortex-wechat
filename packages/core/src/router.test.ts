@@ -113,6 +113,16 @@ describe("CommandRouter", () => {
     expect(callArgs.url).toBe("https://example.com/article");
   });
 
+  it("separates URL from Chinese commentary", async () => {
+    const client = makeMockClient();
+    const router = new CommandRouter(client);
+    const reply = await router.route(makeMsg("https://mp.weixin.qq.com/s/abc123不知道这个是不是真的"));
+    expect(reply.actions_taken).toContain("ingest");
+    const callArgs = (client.ingest as any).mock.calls[0][0];
+    expect(callArgs.url).toBe("https://mp.weixin.qq.com/s/abc123");
+    expect(callArgs.user_annotation).toContain("不知道这个是不是真的");
+  });
+
   it("routes plain text to ingest as content", async () => {
     const client = makeMockClient();
     const router = new CommandRouter(client);
