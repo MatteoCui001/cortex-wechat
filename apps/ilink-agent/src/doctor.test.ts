@@ -24,9 +24,9 @@ describe("doctor", () => {
     expect(result.checks.state_dir.pass).toBe(true);
   });
 
-  it("cortex_api check fails when no server running", async () => {
-    // In test env, no Cortex server is running
-    const result = await doctor();
+  it("cortex_api check fails against unreachable server", async () => {
+    // Point to a port that is guaranteed not to be running Cortex
+    const result = await doctor("http://127.0.0.1:19999/api/v1");
     expect(result.checks.cortex_api.pass).toBe(false);
   });
 });
