@@ -259,7 +259,7 @@ async function dispatchLoop(client: CortexClient) {
 
       for (const notif of pending) {
         const marker = notif.priority === "high" ? "!!!" : notif.priority === "medium" ? " ! " : "   ";
-        const text = `[${marker}] ${notif.short_id}  ${notif.title}`;
+        const text = `[${marker}] ${notif.title}\n\n回复: 确认 ${notif.short_id} / 已读 ${notif.short_id} / 忽略 ${notif.short_id}`;
 
         const ok = await sendMessage(
           account!,
