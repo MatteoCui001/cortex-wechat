@@ -83,7 +83,7 @@ export class CommandRouter {
         const result = await this.extractor.extract(msg, this.history);
         if (result.intent) {
           this.onLLMEvent?.("llm_success");
-          return this.dispatchIntent(reply, result.intent, text);
+          return this.dispatchIntent(reply, result.intent, text, key);
         }
         // LLM failed — fall through to regex with reason
         this.onLLMEvent?.("llm_fallback_regex", result.reason);
@@ -106,6 +106,7 @@ export class CommandRouter {
     reply: OutboundReply,
     intent: ParsedIntent,
     originalText: string,
+    sessionKey?: string,
   ): Promise<OutboundReply> {
     switch (intent.intent) {
       case "help":
@@ -126,12 +127,19 @@ export class CommandRouter {
       case "feedback":
         return this.handleFeedback(reply, intent.target_id!, intent.verdict ?? "useful");
 
-      case "ingest_url":
+      case "ingest_url": {
+        // Cross-message: LLM may return ingest_url with annotation but no URL
+        // when the user comments on a previously shared link.
+        let url = intent.url;
+        if (!url && sessionKey) {
+          url = this.history.findRecentUrl(sessionKey);
+        }
         return this.handleIngest(reply, {
-          url: intent.url,
+          url,
           annotation: intent.annotation,
-          content: intent.url ? undefined : originalText,
+          content: url ? undefined : originalText,
         });
+      }
 
       case "ingest_text":
         return this.handleIngest(reply, { content: intent.content || originalText });

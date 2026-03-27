@@ -56,6 +56,11 @@ let cursor = "";
 const seenIds = new Set<number>();
 const MAX_SEEN = 1000;
 
+// Content-based dedup: iLink may assign different message_ids to the same
+// message on reconnect.  Key = "user_id:text_hash", value = timestamp.
+const seenContent = new Map<string, number>();
+const CONTENT_DEDUP_WINDOW_MS = 30_000; // 30 seconds
+
 function ensureDir() {
   if (!existsSync(STATE_DIR)) mkdirSync(STATE_DIR, { recursive: true, mode: 0o700 });
 }
@@ -156,9 +161,9 @@ async function handleMessage(msg: ILinkMessage, router: CommandRouter) {
   // Skip bot messages
   if (msg.message_type === 2) return;
 
-  // Dedup
+  // Dedup by message_id
   if (seenIds.has(msg.message_id)) {
-    log("poll", `去重跳过: message_id=${msg.message_id}`);
+    log("poll", `去重跳过 (id): message_id=${msg.message_id}`);
     return;
   }
   seenIds.add(msg.message_id);
@@ -168,6 +173,24 @@ async function handleMessage(msg: ILinkMessage, router: CommandRouter) {
   saveRecipient(msg.from_user_id, msg.context_token);
 
   const text = extractText(msg);
+
+  // Content-based dedup: iLink may re-deliver with a new message_id
+  if (text) {
+    const contentKey = `${msg.from_user_id}:${text.slice(0, 100)}`;
+    const lastSeen = seenContent.get(contentKey);
+    if (lastSeen && Date.now() - lastSeen < CONTENT_DEDUP_WINDOW_MS) {
+      log("poll", `去重跳过 (content): ${text.slice(0, 40)}`);
+      return;
+    }
+    seenContent.set(contentKey, Date.now());
+    // Evict old entries
+    if (seenContent.size > MAX_SEEN) {
+      const cutoff = Date.now() - CONTENT_DEDUP_WINDOW_MS;
+      for (const [k, ts] of seenContent) {
+        if (ts < cutoff) seenContent.delete(k);
+      }
+    }
+  }
   if (!text) {
     log("route", `非文本消息 (type=${msg.item_list[0]?.type ?? "?"}), 回复不支持提示`);
     const ok = await sendMessage(account!, msg.from_user_id, msg.context_token, "暂不支持此消息类型，请发送文本。");

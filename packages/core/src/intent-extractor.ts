@@ -87,6 +87,20 @@ export class MessageHistory {
     return this.sessions.size;
   }
 
+  /** Find the most recent URL in a session's history (for cross-message annotation) */
+  findRecentUrl(key: string): string | undefined {
+    const buf = this.sessions.get(key);
+    if (!buf) return undefined;
+    const cutoff = Date.now() - this.ttlMs;
+    const urlRe = /https?:\/\/[^\s<>"'\u4e00-\u9fff\u3000-\u303f\uff00-\uffef]+/i;
+    for (let i = buf.length - 1; i >= 0; i--) {
+      if (buf[i].timestamp <= cutoff) break;
+      const m = buf[i].text.match(urlRe);
+      if (m) return m[0];
+    }
+    return undefined;
+  }
+
   /** Evict sessions with no recent activity (call periodically to prevent leaks) */
   gc(): void {
     const cutoff = Date.now() - this.ttlMs;
@@ -165,8 +179,9 @@ export class IntentExtractor {
         return { intent: null, reason: "llm_empty_response" };
       }
 
-      // Strip markdown code fences if present
-      const cleaned = text.replace(/^```(?:json)?\s*/, "").replace(/\s*```$/, "");
+      // Strip reasoning tags (e.g. <think>...</think>) and markdown code fences
+      let cleaned = text.replace(/<think>[\s\S]*?<\/think>\s*/g, "").trim();
+      cleaned = cleaned.replace(/^```(?:json)?\s*/, "").replace(/\s*```$/, "");
       const parsed = JSON.parse(cleaned) as ParsedIntent;
 
       const validIntents = ["help", "inbox", "ack", "read", "dismiss", "feedback", "ingest_url", "ingest_text"];
