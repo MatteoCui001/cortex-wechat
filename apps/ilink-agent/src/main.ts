@@ -81,11 +81,10 @@ async function authenticate(): Promise<ILinkAccount> {
   log("auth", "开始认证，请扫描二维码...");
   const qr = await getQRCode();
 
-  const qrPath = join(STATE_DIR, "qr.png");
-  const qrBuf = Buffer.from(qr.qrcode_img_content, "base64");
-  writeFileSync(qrPath, qrBuf);
-  log("auth", `二维码已保存: ${qrPath}`);
-  log("auth", "请用微信扫码 -> 确认登录");
+  // qrcode_img_content is a URL, not base64 PNG
+  const qrUrl = qr.qrcode_img_content;
+  log("auth", `扫码链接: ${qrUrl}`);
+  log("auth", "请在微信中打开上方链接，或用另一台设备扫码 -> 确认登录");
 
   while (true) {
     await new Promise((r) => setTimeout(r, 3000));
