@@ -34,8 +34,10 @@ export interface NotificationSummary {
   id: string;
   short_id: string;
   title: string;
+  body: string;
   priority: string;
   source_kind: string;
+  signal_id: string;
   age: string;
 }
 
@@ -43,6 +45,8 @@ export interface NotificationSummary {
 export interface CortexConfig {
   base_url: string; // e.g. http://127.0.0.1:8420/api/v1
   workspace: string;
+  /** Optional Bearer token for API authentication (CORTEX_API_TOKEN) */
+  api_token?: string;
 }
 
 /**

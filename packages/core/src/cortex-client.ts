@@ -6,10 +6,12 @@ import type { CortexConfig, NotificationSummary } from "./types";
 export class CortexClient {
   private baseUrl: string;
   private workspace: string;
+  private apiToken: string | undefined;
 
   constructor(config: CortexConfig) {
     this.baseUrl = config.base_url.replace(/\/$/, "");
     this.workspace = config.workspace;
+    this.apiToken = config.api_token;
   }
 
   /** POST /events/ingest — submit text or URL */
@@ -52,8 +54,10 @@ export class CortexClient {
       id: n.id,
       short_id: n.id.slice(0, 7),
       title: n.title,
+      body: n.body ?? "",
       priority: n.priority,
       source_kind: n.source_kind,
+      signal_id: n.signal_id ?? "",
       age: n.created_at ?? "",
     }));
   }
@@ -114,16 +118,22 @@ export class CortexClient {
 
   // -- HTTP helpers --
 
+  private authHeaders(): Record<string, string> {
+    const h: Record<string, string> = { "Content-Type": "application/json" };
+    if (this.apiToken) h["Authorization"] = `Bearer ${this.apiToken}`;
+    return h;
+  }
+
   private async get(path: string): Promise<Response> {
     return fetch(`${this.baseUrl}${path}`, {
-      headers: { "Content-Type": "application/json" },
+      headers: this.authHeaders(),
     });
   }
 
   private async post(path: string, body: unknown): Promise<Response> {
     return fetch(`${this.baseUrl}${path}`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: this.authHeaders(),
       body: JSON.stringify(body),
     });
   }

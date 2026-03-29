@@ -33,6 +33,32 @@ const CORTEX_BASE_URL = process.env.CORTEX_BASE_URL ?? "http://127.0.0.1:8420/ap
 const CORTEX_WORKSPACE = process.env.CORTEX_WORKSPACE ?? "default";
 const DISPATCH_INTERVAL_MS = Number(process.env.DISPATCH_INTERVAL_MS) || 60_000; // 1 min default
 
+// Sender whitelist — enforced via env var or auto-lock on first message.
+// Priority: ALLOWED_SENDER_IDS env > persisted file > auto-lock first sender.
+const ALLOWED_SENDERS_PATH = join(STATE_DIR, "allowed_senders.json");
+
+let allowedSenders: Set<string> | null = (() => {
+  // 1. Explicit env var takes priority
+  const raw = process.env.ALLOWED_SENDER_IDS?.trim();
+  if (raw) return new Set(raw.split(",").map((s) => s.trim()).filter(Boolean));
+  // 2. Load from persisted file (auto-locked from previous run)
+  if (existsSync(ALLOWED_SENDERS_PATH)) {
+    try {
+      const ids: string[] = JSON.parse(readFileSync(ALLOWED_SENDERS_PATH, "utf-8"));
+      if (ids.length > 0) return new Set(ids);
+    } catch { /* corrupt file, will re-lock */ }
+  }
+  // 3. Not set — will auto-lock on first message
+  return null;
+})();
+
+function autoLockSender(userId: string) {
+  allowedSenders = new Set([userId]);
+  ensureDir();
+  writeFileSync(ALLOWED_SENDERS_PATH, JSON.stringify([userId]), { mode: 0o600 });
+  log("auth", `首次消息，已自动锁定授权用户: ${userId.slice(0, 8)}...`);
+}
+
 // LLM semantic routing — optional, falls back to regex when absent
 const LLM_BASE_URL = process.env.LLM_BASE_URL;
 const LLM_API_KEY = process.env.LLM_API_KEY;
@@ -161,6 +187,17 @@ async function handleMessage(msg: ILinkMessage, router: CommandRouter) {
   // Skip bot messages
   if (msg.message_type === 2) return;
 
+  // Sender whitelist — reject unauthorized senders or auto-lock first one
+  if (allowedSenders) {
+    if (!allowedSenders.has(msg.from_user_id)) {
+      log("auth", `拒绝未授权发送者: ${msg.from_user_id.slice(0, 8)}`);
+      return;
+    }
+  } else {
+    // First message ever — auto-lock this sender as the owner
+    autoLockSender(msg.from_user_id);
+  }
+
   // Dedup by message_id
   if (seenIds.has(msg.message_id)) {
     log("poll", `去重跳过 (id): message_id=${msg.message_id}`);
@@ -259,7 +296,10 @@ async function dispatchLoop(client: CortexClient) {
 
       for (const notif of pending) {
         const marker = notif.priority === "high" ? "!!!" : notif.priority === "medium" ? " ! " : "   ";
-        const text = `[${marker}] ${notif.title}\n\n回复: 确认 ${notif.short_id} / 已读 ${notif.short_id} / 忽略 ${notif.short_id}`;
+        const bodyLine = notif.body ? `\n${notif.body}` : "";
+        const actions = [`确认 ${notif.short_id}`, `已读 ${notif.short_id}`, `忽略 ${notif.short_id}`];
+        if (notif.signal_id) actions.push(`有用 ${notif.signal_id.slice(0, 7)}`);
+        const text = `[${marker}] ${notif.title}${bodyLine}\n\n回复: ${actions.join(" / ")}`;
 
         const ok = await sendMessage(
           account!,
@@ -296,6 +336,11 @@ async function main() {
   }
 
   log("system", "Cortex iLink Agent 启动");
+  if (allowedSenders) {
+    log("auth", `发送者白名单已启用: ${allowedSenders.size} 个授权用户`);
+  } else {
+    log("auth", "首次运行: 将自动锁定第一个发消息的微信用户为唯一授权用户");
+  }
   loadState();
 
   if (!account) {
@@ -306,6 +351,7 @@ async function main() {
   const client = new CortexClient({
     base_url: CORTEX_BASE_URL,
     workspace: CORTEX_WORKSPACE,
+    api_token: process.env.CORTEX_API_TOKEN,
   });
 
   const healthy = await client.health();

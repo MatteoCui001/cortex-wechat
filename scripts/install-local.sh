@@ -130,30 +130,47 @@ step 6 "Configuring environment..."
 
 mkdir -p "$HOME/.cortex"
 
+# Generate a random API token if not already set
+_generate_token() {
+  # 32-byte random hex — simple and secure
+  openssl rand -hex 32 2>/dev/null || LC_ALL=C tr -dc 'a-f0-9' </dev/urandom | head -c 64
+}
+
 # Create env file if not exists; merge missing keys if it does
 if [ -f "$ENV_FILE" ]; then
   skip "Env file exists at $ENV_FILE"
   # Check for missing keys and append them
-  for key in LLM_BASE_URL LLM_API_KEY LLM_MODEL; do
+  for key in LLM_BASE_URL LLM_API_KEY LLM_MODEL CORTEX_API_TOKEN; do
     if ! grep -q "^export $key=" "$ENV_FILE" 2>/dev/null; then
       case $key in
-        LLM_BASE_URL) echo "export LLM_BASE_URL=\"https://api.minimaxi.chat/v1\"" >> "$ENV_FILE" ;;
-        LLM_API_KEY)  echo "export LLM_API_KEY=\"\"  # fill in your MiniMax API key" >> "$ENV_FILE" ;;
-        LLM_MODEL)    echo "export LLM_MODEL=\"MiniMax-M2.7\"" >> "$ENV_FILE" ;;
+        LLM_BASE_URL)     echo "export LLM_BASE_URL=\"https://api.minimaxi.chat/v1\"" >> "$ENV_FILE" ;;
+        LLM_API_KEY)      echo "export LLM_API_KEY=\"\"  # fill in your MiniMax API key" >> "$ENV_FILE" ;;
+        LLM_MODEL)        echo "export LLM_MODEL=\"MiniMax-M2.7\"" >> "$ENV_FILE" ;;
+        CORTEX_API_TOKEN) echo "export CORTEX_API_TOKEN=\"$(_generate_token)\"" >> "$ENV_FILE" ;;
       esac
-      warn "Added missing $key to $ENV_FILE (check the value)"
+      warn "Added missing $key to $ENV_FILE"
     fi
   done
 else
-  cat > "$ENV_FILE" << 'ENVEOF'
-# Cortex LLM Configuration
-# Used by both cortex-serve and ilink-agent for signal detection and semantic routing.
+  GENERATED_TOKEN="$(_generate_token)"
+  cat > "$ENV_FILE" << ENVEOF
+# Cortex Environment Configuration
+# Sourced by both cortex-serve and ilink-agent at startup.
+
+# API Authentication — auto-generated, shared between cortex and ilink-agent.
+# Both services read this token; no manual setup needed.
+export CORTEX_API_TOKEN="$GENERATED_TOKEN"
+
+# LLM Configuration
+# Used for signal detection and semantic routing.
 # Leave LLM_API_KEY empty to run in regex-only mode (no signal detection).
 export LLM_BASE_URL="https://api.minimaxi.chat/v1"
 export LLM_API_KEY=""
 export LLM_MODEL="MiniMax-M2.7"
 ENVEOF
-  warn "Created $ENV_FILE — edit it to add your LLM_API_KEY for signal detection"
+  chmod 600 "$ENV_FILE"
+  ok "Generated API token and config at $ENV_FILE"
+  warn "Edit $ENV_FILE to add your LLM_API_KEY for signal detection"
 fi
 
 # Generate wrapper scripts from templates (user-specific paths)
@@ -171,8 +188,9 @@ _generate_wrappers() {
 export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
 export HOME="$HOME"
 
-# Source LLM env for signal detection
+# Source shared env (API token, LLM config)
 [ -f "$HOME/.cortex/env" ] && source "$HOME/.cortex/env"
+export CORTEX_API_TOKEN="\${CORTEX_API_TOKEN:-}"
 export LLM_API_KEY="\${LLM_API_KEY:-}"
 
 cd "$CORTEX_DIR" || exit 1
@@ -187,8 +205,9 @@ EOF
 export PATH="$BUN_DIR:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
 export HOME="$HOME"
 
-# Source LLM env for semantic routing
+# Source shared env (API token, LLM config)
 [ -f "$HOME/.cortex/env" ] && source "$HOME/.cortex/env"
+export CORTEX_API_TOKEN="\${CORTEX_API_TOKEN:-}"
 
 cd "$WECHAT_DIR" || exit 1
 exec "$BUN_PATH" run start:ilink
