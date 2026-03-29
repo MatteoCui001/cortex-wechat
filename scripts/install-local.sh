@@ -17,6 +17,9 @@ MIGRATIONS_DIR="$CORTEX_DIR/migrations"
 ENV_FILE="$HOME/.cortex/env"
 DB_NAME="cortex"
 
+# Ensure common tool paths are on PATH (bun, uv may live in user-local dirs)
+export PATH="$HOME/.bun/bin:$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

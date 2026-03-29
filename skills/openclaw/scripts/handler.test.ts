@@ -1,5 +1,5 @@
 /**
- * OpenClaw handler contract fixture tests.
+ * [LEGACY] OpenClaw handler contract fixture tests.
  *
  * These tests verify that the stdin/stdout JSON contract is stable.
  * When the actual OpenClaw protocol is confirmed, these fixtures
@@ -36,7 +36,7 @@ const FIXTURES = {
 function makeMockClient() {
   return {
     ingest: mock(() => Promise.resolve({ id: "e1", title: "Test", tags: [] })),
-    getNotifications: mock(() => Promise.resolve([{ id: "n1", short_id: "n1", title: "Test", priority: "medium", source_kind: "signal", age: "" }])),
+    getNotifications: mock(() => Promise.resolve([{ id: "n1", short_id: "n1", title: "Test", body: "", priority: "medium", source_kind: "signal", signal_id: "", age: "" }])),
     transitionNotification: mock(() => Promise.resolve({ ok: true })),
     submitFeedback: mock(() => Promise.resolve({ ok: true })),
     health: mock(() => Promise.resolve(true)),
