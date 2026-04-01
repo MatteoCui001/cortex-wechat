@@ -61,7 +61,7 @@ export interface LLMConfig {
   api_key: string;
   /** Model ID (default: anthropic/claude-haiku-4.5) */
   model?: string;
-  /** Request timeout in ms (default: 6000) */
+  /** Request timeout in ms (default: 15000) */
   timeout_ms?: number;
 }
 

@@ -113,7 +113,7 @@ export class MessageHistory {
   }
 }
 
-const DEFAULT_TIMEOUT_MS = 6000;
+const DEFAULT_TIMEOUT_MS = 15000;
 
 export class IntentExtractor {
   private config: LLMConfig;

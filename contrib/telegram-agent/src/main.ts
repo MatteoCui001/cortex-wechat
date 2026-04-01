@@ -9,12 +9,10 @@
  *   2. Set TELEGRAM_BOT_TOKEN in ~/.cortex/env
  *   3. Run: bun run start:telegram
  */
-import { CommandRouter, CortexClient } from "@cortex-wechat/core";
+import { CommandRouter, CortexClient, loadConfig } from "@cortex-wechat/core";
 import type { InboundMessage } from "@cortex-wechat/core";
 
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
-const CORTEX_BASE_URL = process.env.CORTEX_BASE_URL ?? "http://127.0.0.1:8420/api/v1";
-const CORTEX_WORKSPACE = process.env.CORTEX_WORKSPACE ?? "default";
 const ALLOWED_CHAT_IDS = process.env.TELEGRAM_ALLOWED_CHAT_IDS?.split(",").map(Number).filter(Boolean) ?? [];
 
 if (!TELEGRAM_BOT_TOKEN) {
@@ -55,11 +53,7 @@ async function tgSend(chatId: number, text: string) {
 async function main() {
   console.log("[telegram] Starting Cortex Telegram Agent...");
 
-  const client = new CortexClient({
-    base_url: CORTEX_BASE_URL,
-    workspace: CORTEX_WORKSPACE,
-    api_token: process.env.CORTEX_API_TOKEN,
-  });
+  const client = new CortexClient(loadConfig());
 
   const healthy = await client.health();
   if (!healthy) {

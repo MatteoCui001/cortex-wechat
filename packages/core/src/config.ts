@@ -27,6 +27,6 @@ export function loadLLMConfig(): LLMConfig | undefined {
     base_url,
     api_key,
     model: process.env.LLM_MODEL,
-    timeout_ms: Number(process.env.LLM_TIMEOUT_MS) || 6000,
+    timeout_ms: Number(process.env.LLM_TIMEOUT_MS) || 15000,
   };
 }
