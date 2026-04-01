@@ -1,50 +1,82 @@
 # cortex-wechat
 
-Cortex 微信接入 — 双模式架构。
+> WeChat and agent integrations for Cortex.
 
-Public `v1.0.0` release for the sibling-repo deployment flow:
+Public `v1.0.0` release.
 
+English | [中文说明](README_CN.md)
+
+`cortex-wechat` is the input and notification layer for Cortex.
+It lets you forward messages and links from WeChat into Cortex, route notifications back to WeChat, and expose Cortex workflows to agent skills.
+
+This repo is not a standalone product. It is designed to work with the main Cortex repository:
+[`cortex`](https://github.com/MatteoCui001/cortex)
+
+Recommended full setup:
+
+```text
+~/Projects/
+├── cortex/
+└── cortex-wechat/
 ```
-~/Projects/cortex
-~/Projects/cortex-wechat
-```
 
-## 架构
+## What This Repo Contains
 
-```
-packages/core       共享内核：消息模型、命令路由、Cortex 客户端、回复格式化
-apps/ilink-agent    Mode A：iLink 直连 agent（微信未绑其他 agent 时使用）
-skills/openclaw     Mode B：OpenClaw skill adapter（微信已绑 OpenClaw 时使用）
-skills/claude-code  Mode B：Claude Code skill adapter（微信已绑 Claude Code 时使用）
-```
+- `packages/core`: shared message model, routing, Cortex client, reply formatting
+- `apps/ilink-agent`: direct iLink WeChat agent
+- `skills/openclaw`: OpenClaw skill adapter
+- `skills/claude-code`: Claude Code skill adapter
 
-## 前提
+## What It Does
 
-- Sibling Cortex repo 已克隆到 `../cortex`
-- Cortex API 运行在 `http://127.0.0.1:8420`
+- zero-friction capture through WeChat forwarding
+- notification delivery back to WeChat
+- agent-facing skill adapters for Cortex workflows
+- local deployment flow for a personal knowledge stack
+
+## Requirements
+
+- the sibling [`cortex`](https://github.com/MatteoCui001/cortex) repo running locally
+- Cortex API reachable at `http://127.0.0.1:8420/api/v1`
 - Bun >= 1.0
 
-## 快速开始
+## Quick Start
+
+### Recommended: full local install
 
 ```bash
-# Recommended: install the full sibling-repo setup on macOS
+git clone https://github.com/MatteoCui001/cortex.git ~/Projects/cortex
+git clone https://github.com/MatteoCui001/cortex-wechat.git ~/Projects/cortex-wechat
+
+cd ~/Projects/cortex-wechat
 ./scripts/install-local.sh
-
-# Manual agent-only setup
-bun install
-
-# Mode A: 直连微信
-bun run start:ilink
-
-# Mode B: 作为 skill 使用
-# 安装到 Claude Code 或 OpenClaw 后按 SKILL.md 指引操作
 ```
 
-`./scripts/install-local.sh` generates machine-specific launchd assets under `scripts/launchd/`. Those generated files are intentionally not versioned.
+### Agent-only setup
 
-## 测试
+```bash
+bun install
+bun run start:ilink
+```
+
+## Modes
+
+- Mode A: direct iLink agent for WeChat
+- Mode B: skill adapter for Claude Code or OpenClaw
+
+## Repo Guide
+
+- Main backend + console: [`cortex`](https://github.com/MatteoCui001/cortex)
+- Deployment notes: [`BETA.md`](BETA.md)
+- Agent install notes: [`docs/AGENT-INSTALL.md`](docs/AGENT-INSTALL.md)
+
+## Testing
 
 ```bash
 bun x tsc --noEmit
 bun test
 ```
+
+## License
+
+MIT
