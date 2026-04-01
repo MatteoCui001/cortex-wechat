@@ -3,3 +3,6 @@ dist/
 *.log
 .DS_Store
 bun.lock
+scripts/launchd/*.plist
+scripts/launchd/*.sh
+!scripts/launchd/README.md

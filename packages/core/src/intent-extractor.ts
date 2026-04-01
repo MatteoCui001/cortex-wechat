@@ -18,14 +18,16 @@ Rules:
 - Commands like 收件箱/inbox → "inbox", 帮助/help/? → "help"
 - 确认/ack + ID → "ack", 已读/read + ID → "read", 忽略/dismiss + ID → "dismiss"
 - 有用/没用/useful/not_useful + ID → "feedback"
-- Pure text with no URL and no command → "ingest_text"
+- If the user is asking a question, seeking analysis, requesting opinions, or having a conversation (NOT a command and NOT content to save), the intent is "chat". Put the full message in "content".
+- Short factual notes the user clearly wants to save (e.g. "会议纪要：…", "记一下…") → "ingest_text"
+- When ambiguous between chat and ingest_text, prefer "chat" — it's easier to save later than to miss a conversation.
 
 Respond with ONLY a JSON object (no markdown, no explanation):
 {
-  "intent": "help"|"inbox"|"ack"|"read"|"dismiss"|"feedback"|"ingest_url"|"ingest_text",
+  "intent": "help"|"inbox"|"ack"|"read"|"dismiss"|"feedback"|"ingest_url"|"ingest_text"|"chat",
   "url": "extracted URL or omit",
   "annotation": "user commentary about the URL, or omit",
-  "content": "plain text for ingest_text, or omit",
+  "content": "plain text for ingest_text or chat, or omit",
   "target_id": "notification/signal ID, or omit",
   "verdict": "useful|not_useful|wrong|save_for_later, or omit"
 }`;
@@ -184,7 +186,7 @@ export class IntentExtractor {
       cleaned = cleaned.replace(/^```(?:json)?\s*/, "").replace(/\s*```$/, "");
       const parsed = JSON.parse(cleaned) as ParsedIntent;
 
-      const validIntents = ["help", "inbox", "ack", "read", "dismiss", "feedback", "ingest_url", "ingest_text"];
+      const validIntents = ["help", "inbox", "ack", "read", "dismiss", "feedback", "ingest_url", "ingest_text", "chat"];
       if (!validIntents.includes(parsed.intent)) {
         return { intent: null, reason: "llm_parse_error" };
       }

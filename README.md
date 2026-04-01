@@ -2,6 +2,13 @@
 
 Cortex 微信接入 — 双模式架构。
 
+Public `v1.0.0` release for the sibling-repo deployment flow:
+
+```
+~/Projects/cortex
+~/Projects/cortex-wechat
+```
+
 ## 架构
 
 ```
@@ -13,12 +20,17 @@ skills/claude-code  Mode B：Claude Code skill adapter（微信已绑 Claude Cod
 
 ## 前提
 
+- Sibling Cortex repo 已克隆到 `../cortex`
 - Cortex API 运行在 `http://127.0.0.1:8420`
 - Bun >= 1.0
 
 ## 快速开始
 
 ```bash
+# Recommended: install the full sibling-repo setup on macOS
+./scripts/install-local.sh
+
+# Manual agent-only setup
 bun install
 
 # Mode A: 直连微信
@@ -28,8 +40,11 @@ bun run start:ilink
 # 安装到 Claude Code 或 OpenClaw 后按 SKILL.md 指引操作
 ```
 
+`./scripts/install-local.sh` generates machine-specific launchd assets under `scripts/launchd/`. Those generated files are intentionally not versioned.
+
 ## 测试
 
 ```bash
+bun x tsc --noEmit
 bun test
 ```

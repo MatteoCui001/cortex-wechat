@@ -1,4 +1,4 @@
-# Cortex + WeChat Agent: Private Beta Guide
+# Cortex + WeChat Agent: Deployment Guide
 
 ## What is this?
 
@@ -20,43 +20,42 @@ Cortex is a personal knowledge infrastructure for knowledge workers (especially 
 | Python 3.11+ | via `uv` (recommended) |
 | Bun 1.x | for the WeChat agent |
 | PostgreSQL 16+ with pgvector | local or remote |
-| Cortex backend | `github.com/<your-org>/cortex` |
-| cortex-wechat | `github.com/<your-org>/cortex-wechat` |
+| Cortex backend | sibling repo at `~/Projects/cortex` |
+| cortex-wechat | this repo at `~/Projects/cortex-wechat` |
 
-## Quick Install
+## Recommended Install
 
 ```bash
-# 1. Clone both repos
+# 1. Clone both repos as siblings
 git clone <cortex-repo> ~/Projects/cortex
 git clone <cortex-wechat-repo> ~/Projects/cortex-wechat
 
-# 2. Install Cortex backend
+# 2. Run the local installer from cortex-wechat
+cd ~/Projects/cortex-wechat
+./scripts/install-local.sh
+```
+
+This generates machine-specific launchd assets under `scripts/launchd/`, installs both services, and starts Cortex plus the iLink agent.
+
+## Manual Install
+
+```bash
+# 1. Install Cortex backend
 cd ~/Projects/cortex
-uv sync
-
-# 3. Set up database (if not already)
+uv sync --extra dev --extra local-embeddings
 createdb cortex
-uv run cortex migrate
+for f in migrations/0*.sql; do psql -d cortex -f "$f"; done
 
-# 4. Start Cortex
+# 2. Start Cortex
 uv run cortex serve
-# Verify: curl http://127.0.0.1:8420/api/v1/health
 
-# 5. Install WeChat agent
+# 3. Install WeChat agent
 cd ~/Projects/cortex-wechat
 bun install
 
-# 6. Configure LLM (optional, for smart message routing)
-export LLM_BASE_URL="https://api.minimax.chat/v1"
-export LLM_API_KEY="your-key"
-export LLM_MODEL="MiniMax-M2.7"
-
-# 7. Start WeChat agent
+# 4. Start WeChat agent
 bun run start:ilink
 # Scan the QR code with WeChat when prompted
-
-# 8. Open Console
-open http://127.0.0.1:8420/console
 ```
 
 ## Running as Services (Persistent)
@@ -107,14 +106,11 @@ cd ~/Projects/cortex-wechat && git pull && bun install
 | launchd service not starting | Check `~/Library/Logs/cortex/*.err`. Run `./scripts/cortex-services.sh logs` |
 | No notifications pushed | Verify primary recipient: `cat ~/.cortex/wechat/primary_recipient.json` |
 
-## Submitting Feedback
+## Release Smoke Test
 
-Please report issues, suggestions, and feature requests to:
-- GitHub Issues on the cortex-wechat repo
-- Or directly via WeChat to the maintainer
+Use the sibling-repo smoke test documented in `~/Projects/cortex/docs/release-smoke.md` after installation. It covers:
 
-**Key questions we want to learn from beta:**
-1. Are the notifications useful? Too many / too few?
-2. Do you use Console or WeChat commands more?
-3. What content types do you send most?
-4. What's missing from the context/relations view?
+- `docker compose config` from the Cortex repo
+- Cortex health and authenticated ingest
+- foreground `bun run start:ilink` startup from `cortex-wechat`
+- a manual WeChat message round-trip

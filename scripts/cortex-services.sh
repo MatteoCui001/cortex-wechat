@@ -25,11 +25,35 @@ DIGEST_PLIST="$PLIST_DIR/$DIGEST_LABEL.plist"
 CORTEX_LOG_DIR="$HOME/Library/Logs/cortex"
 ILINK_LOG_DIR="$HOME/Library/Logs/cortex-wechat"
 
+require_generated_assets() {
+  local missing=0
+  local required=(
+    "$PLIST_DIR/cortex-serve.sh"
+    "$PLIST_DIR/ilink-agent.sh"
+    "$CORTEX_PLIST"
+    "$ILINK_PLIST"
+    "$DIGEST_PLIST"
+  )
+
+  for file in "${required[@]}"; do
+    if [ ! -f "$file" ]; then
+      echo "Missing generated launchd asset: $file" >&2
+      missing=1
+    fi
+  done
+
+  if [ "$missing" -ne 0 ]; then
+    echo "Run './scripts/install-local.sh' first to regenerate launchd assets." >&2
+    exit 1
+  fi
+}
+
 ensure_log_dirs() {
   mkdir -p "$CORTEX_LOG_DIR" "$ILINK_LOG_DIR"
 }
 
 cmd_install() {
+  require_generated_assets
   ensure_log_dirs
   mkdir -p "$LAUNCH_AGENTS"
   cp "$CORTEX_PLIST" "$LAUNCH_AGENTS/$CORTEX_LABEL.plist"
@@ -54,6 +78,7 @@ cmd_uninstall() {
 }
 
 cmd_start() {
+  require_generated_assets
   ensure_log_dirs
   local uid
   uid=$(id -u)

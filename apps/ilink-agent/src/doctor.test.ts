@@ -2,31 +2,27 @@ import { describe, expect, it } from "bun:test";
 import { doctor } from "./doctor";
 
 describe("doctor", () => {
-  it("returns structured check results", async () => {
+  it("returns an array of named checks", async () => {
     const result = await doctor();
-    expect(result).toHaveProperty("ok");
-    expect(result).toHaveProperty("checks");
+    expect(Array.isArray(result)).toBe(true);
+    expect(result.length).toBe(6);
 
-    // Should have these check keys
-    expect(result.checks).toHaveProperty("cortex_api");
-    expect(result.checks).toHaveProperty("ilink_account");
-    expect(result.checks).toHaveProperty("state_dir");
+    const names = new Set(result.map((check) => check.name));
+    expect(names.has("Environment")).toBe(true);
+    expect(names.has("PostgreSQL")).toBe(true);
+    expect(names.has("Cortex API")).toBe(true);
+    expect(names.has("LLM Config")).toBe(true);
+    expect(names.has("WeChat Session")).toBe(true);
+    expect(names.has("Disk Space")).toBe(true);
+  });
 
-    // Each check has pass and detail
-    for (const check of Object.values(result.checks)) {
-      expect(typeof check.pass).toBe("boolean");
+  it("uses the current CheckResult contract", async () => {
+    const result = await doctor();
+
+    for (const check of result) {
+      expect(typeof check.name).toBe("string");
+      expect(["ok", "warn", "fail"]).toContain(check.status);
       expect(typeof check.detail).toBe("string");
     }
-  });
-
-  it("state_dir check passes (writable)", async () => {
-    const result = await doctor();
-    expect(result.checks.state_dir.pass).toBe(true);
-  });
-
-  it("cortex_api check fails against unreachable server", async () => {
-    // Point to a port that is guaranteed not to be running Cortex
-    const result = await doctor("http://127.0.0.1:19999/api/v1");
-    expect(result.checks.cortex_api.pass).toBe(false);
   });
 });

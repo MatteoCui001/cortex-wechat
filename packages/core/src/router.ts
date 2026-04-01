@@ -36,6 +36,7 @@ const SEARCH_RE = /^(?:搜索|search|找)\s+(.+)/i;
 const DIGEST_RE = /^(?:日报|digest|摘要)(?:\s+(\d+))?$/i;
 const STATS_RE = /^(?:统计|stats|状态)$/i;
 const MENU_RE = /^(?:菜单|menu|命令)$/i;
+const CHAT_RE = /^(?:聊|chat|问|ask)\s+(.+)/is;
 
 const FEEDBACK_MAP: Record<string, string> = {
   有用: "useful",
@@ -56,6 +57,7 @@ export class CommandRouter {
   private client: CortexClient;
   private extractor: IntentExtractor | null = null;
   private history: MessageHistory;
+  private chatLLM: LLMConfig | undefined;
   /** Optional callback for LLM routing events (for structured logging) */
   onLLMEvent?: (event: "llm_success" | "llm_fallback_regex", reason?: LLMFailReason) => void;
 
@@ -64,6 +66,7 @@ export class CommandRouter {
     this.history = new MessageHistory(5, 10);
     if (opts?.llm) {
       this.extractor = new IntentExtractor(opts.llm);
+      this.chatLLM = opts.llm;
     }
   }
 
@@ -157,6 +160,9 @@ export class CommandRouter {
       case "ingest_text":
         return this.handleIngest(reply, { content: intent.content || originalText });
 
+      case "chat":
+        return this.handleChat(reply, intent.content || originalText, sessionKey);
+
       case "thesis_list":
         return this.handleThesisList(reply);
       case "thesis_generate":
@@ -239,6 +245,13 @@ export class CommandRouter {
       return this.handleDigest(reply, daysMatch?.[1] ? Number(daysMatch[1]) : undefined);
     }
     if (STATS_RE.test(text)) return this.handleStats(reply);
+
+    // 6.5 Chat (explicit prefix: 聊/chat/问/ask)
+    const chatMatch = text.match(CHAT_RE);
+    if (chatMatch) {
+      const sessionKey = MessageHistory.keyFor(msg);
+      return this.handleChat(reply, chatMatch[1], sessionKey);
+    }
 
     // 7. URL ingest
     const urlMatch = (msg.url ?? text).match(URL_RE);
@@ -485,6 +498,110 @@ export class CommandRouter {
     return reply;
   }
 
+  private async handleChat(
+    reply: OutboundReply,
+    userMessage: string,
+    sessionKey?: string,
+  ): Promise<OutboundReply> {
+    reply.actions_taken.push("chat");
+
+    if (!this.chatLLM) {
+      reply.reply_text = '聊天功能需要配置 LLM。请设置 LLM_BASE_URL 和 LLM_API_KEY。\n发送"帮助"查看其他可用命令。';
+      return reply;
+    }
+
+    // Build conversation context from history
+    const messages: Array<{ role: string; content: string }> = [
+      { role: "system", content: CHAT_SYSTEM_PROMPT },
+    ];
+
+    // Inject recent knowledge context from Cortex search (best-effort)
+    try {
+      const results = await this.client.search(userMessage, 3);
+      if (results.length > 0) {
+        const context = results
+          .map((r: any) => {
+            const e = r.event ?? r;
+            return `- ${e.title ?? "无标题"}: ${(e.summary ?? "").slice(0, 120)}`;
+          })
+          .join("\n");
+        messages.push({
+          role: "system",
+          content: `[知识库相关内容]\n${context}`,
+        });
+      }
+    } catch {
+      // search is best-effort; chat still works without it
+    }
+
+    // Add recent conversation history
+    if (sessionKey) {
+      const recentContext = this.history.getContext(sessionKey);
+      if (recentContext) {
+        for (const line of recentContext.split("\n")) {
+          if (line.trim()) messages.push({ role: "user", content: line });
+        }
+      }
+    }
+
+    messages.push({ role: "user", content: userMessage });
+
+    try {
+      const baseUrl = this.chatLLM.base_url.replace(/\/$/, "");
+      const controller = new AbortController();
+      const timeoutMs = this.chatLLM.timeout_ms ?? 15000;
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+      let res: Response;
+      try {
+        res = await fetch(`${baseUrl}/chat/completions`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${this.chatLLM.api_key}`,
+          },
+          body: JSON.stringify({
+            model: this.chatLLM.model ?? "MiniMax-M2.7",
+            messages,
+            temperature: 0.7,
+            max_tokens: 800,
+          }),
+          signal: controller.signal,
+        });
+      } finally {
+        clearTimeout(timer);
+      }
+
+      if (!res.ok) {
+        reply.reply_text = "对话请求失败，请稍后重试。";
+        reply.errors.push(`chat_llm_error_${res.status}`);
+        return reply;
+      }
+
+      const data = (await res.json()) as any;
+      let text = data.choices?.[0]?.message?.content?.trim();
+      if (!text) {
+        reply.reply_text = "没有收到回复，请稍后重试。";
+        reply.errors.push("chat_empty_response");
+        return reply;
+      }
+
+      // Strip thinking tags if present
+      text = text.replace(/<think>[\s\S]*?<\/think>\s*/g, "").trim();
+      reply.reply_text = text;
+    } catch (err: any) {
+      if (err?.name === "AbortError") {
+        reply.reply_text = "回复超时，请稍后重试或简化问题。";
+        reply.errors.push("chat_timeout");
+      } else {
+        reply.reply_text = "对话出错，请稍后重试。";
+        reply.errors.push("chat_error");
+      }
+    }
+
+    return reply;
+  }
+
   private async handleIngest(
     reply: OutboundReply,
     opts: { content?: string; url?: string; annotation?: string },
@@ -521,11 +638,40 @@ export class CommandRouter {
   }
 }
 
+const CHAT_SYSTEM_PROMPT = `你是 Cortex 知识助手，通过微信与用户对话。
+
+## 你是谁
+你是一个嵌入在 Cortex（个人知识管理系统）中的 AI 助手。用户是投资研究人员或高频知识工作者，他们通过微信使用 Cortex 来收录文章、追踪投资论点、管理通知。
+
+## 你能做什么
+- 回答用户关于知识库中已收录内容的问题
+- 帮助用户分析、总结、比较收录的文章和笔记
+- 就投资论点、行业趋势、技术动态展开讨论
+- 提供对收录内容的洞察和关联分析
+
+## 你的风格
+- 简洁直接，每条回复控制在微信阅读友好的长度（200字以内为佳）
+- 中文优先，技术术语可保留英文
+- 有观点但标注推理依据，不模棱两可
+- 如果涉及知识库中的具体文章，引用标题
+
+## 上下文
+系统可能会附带"知识库相关内容"，那是从用户的 Cortex 知识库中检索到的与当前问题相关的条目。优先基于这些内容回答，但也可以使用你自己的知识补充。
+
+## 边界
+- 你不执行 Cortex 命令（收件箱、确认、已读等由命令系统处理）
+- 如果用户想保存内容，建议他们直接发送链接或文字（会自动收录）
+- 如果用户的问题更适合用 Cortex 命令解决，告诉他们可以用什么命令`;
+
 const HELP_TEXT = `Cortex 微信助手
 
 收录:
   发送链接 → 自动收录文章
   发送文本 → 存为笔记
+
+对话:
+  聊/问 <内容> → 与 AI 助手对话
+  (LLM 开启时，自然提问也会自动进入对话)
 
 通知:
   收件箱     → 查看待处理通知
@@ -557,6 +703,7 @@ const HELP_TEXT = `Cortex 微信助手
 const MENU_TEXT = `快捷命令:
 
 [收录] 直接发链接或文字
+[聊/问 <内容>] 与 AI 对话
 [收件箱] 查看通知
 [日报] 今日摘要
 [论点] 投资论点

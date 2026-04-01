@@ -5,7 +5,7 @@ description: >
   check notifications, provide signal feedback. Use when the user mentions
   "cortex", "收件箱", "inbox", "ingest", "收录", or wants to interact with
   their knowledge base.
-version: 0.1.0
+version: 1.0.0
 metadata:
   openclaw:
     requires:

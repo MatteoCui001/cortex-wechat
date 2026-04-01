@@ -49,7 +49,7 @@ describe("CortexClient", () => {
       const client = makeClient();
       const result = await client.deliverNotification("already-delivered");
       expect(result.ok).toBe(false);
-      expect(result.error).toBe("Invalid transition");
+      expect(result.error).toBe("操作无效（状态已变更）");
     });
 
     it("posts to correct URL", async () => {
