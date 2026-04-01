@@ -24,6 +24,19 @@ import { loadRecipient, saveRecipient } from "./recipient";
 
 // --- Config ---
 
+const WELCOME_TEXT = `欢迎使用 Cortex!
+
+你的个人知识引擎已就绪。以下是常用命令:
+
+收录: 直接发送链接或文字
+收件箱: 查看待处理通知
+日报: 最近 7 天摘要
+论点: 查看投资论点
+搜索 <关键词>: 搜索知识库
+统计: 系统概览
+
+发送"帮助"查看完整命令列表。`;
+
 const STATE_DIR = join(homedir(), ".cortex", "wechat");
 const ACCOUNT_PATH = join(STATE_DIR, "account.json");
 const CURSOR_PATH = join(STATE_DIR, "cursor.txt");
@@ -124,30 +137,41 @@ function saveSeenIds() {
 
 // --- Auth ---
 
-async function authenticate(): Promise<ILinkAccount> {
-  log("auth", "开始认证，请扫描二维码...");
-  const qr = await getQRCode();
-
-  // qrcode_img_content is a URL, not base64 PNG
-  const qrUrl = qr.qrcode_img_content;
-  log("auth", `扫码链接: ${qrUrl}`);
-  log("auth", "请在微信中打开上方链接，或用另一台设备扫码 -> 确认登录");
-
-  while (true) {
-    await new Promise((r) => setTimeout(r, 3000));
-    const result = await checkQRStatus(qr.qrcode);
-
-    if (result.status === "confirmed" && result.account) {
-      log("auth", "认证成功!");
-      saveAccount(result.account);
-      return result.account;
+async function authenticate(maxRetries = 5): Promise<ILinkAccount> {
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    if (attempt > 0) {
+      const delay = Math.min(5000 * attempt, 30000);
+      log("auth", `第 ${attempt + 1}/${maxRetries} 次重试，${delay / 1000}s 后获取新二维码...`);
+      await new Promise((r) => setTimeout(r, delay));
     }
-    if (result.status === "expired") {
-      log("auth", "二维码已过期，重新生成...");
-      return authenticate();
+
+    log("auth", "开始认证，请扫描二维码...");
+    const qr = await getQRCode();
+
+    // qrcode_img_content is a URL, not base64 PNG
+    const qrUrl = qr.qrcode_img_content;
+    log("auth", `扫码链接: ${qrUrl}`);
+    log("auth", "请在微信中打开上方链接，或用另一台设备扫码 -> 确认登录");
+
+    let expired = false;
+    while (!expired) {
+      await new Promise((r) => setTimeout(r, 3000));
+      const result = await checkQRStatus(qr.qrcode);
+
+      if (result.status === "confirmed" && result.account) {
+        log("auth", "认证成功!");
+        saveAccount(result.account);
+        return result.account;
+      }
+      if (result.status === "expired") {
+        log("auth", "二维码已过期，重新生成...");
+        expired = true;
+      } else {
+        log("auth", `等待扫码... (${result.status})`);
+      }
     }
-    log("auth", `等待扫码... (${result.status})`);
   }
+  throw new Error(`认证失败: ${maxRetries} 次二维码均已过期，请检查网络或手动重启`);
 }
 
 // --- Main loop ---
@@ -196,6 +220,8 @@ async function handleMessage(msg: ILinkMessage, router: CommandRouter) {
   } else {
     // First message ever — auto-lock this sender as the owner
     autoLockSender(msg.from_user_id);
+    // Send welcome message on first connection
+    sendMessage(account!, msg.from_user_id, msg.context_token, WELCOME_TEXT).catch((err) => log("send", `欢迎消息发送失败: ${err}`));
   }
 
   // Dedup by message_id
@@ -229,13 +255,27 @@ async function handleMessage(msg: ILinkMessage, router: CommandRouter) {
     }
   }
   if (!text) {
-    log("route", `非文本消息 (type=${msg.item_list[0]?.type ?? "?"}), 回复不支持提示`);
-    const ok = await sendMessage(account!, msg.from_user_id, msg.context_token, "暂不支持此消息类型，请发送文本。");
+    // Check for image/voice/file/video — acknowledge with specific message
+    const itemType = msg.item_list[0]?.type;
+    const typeNames: Record<number, string> = { 2: "图片", 3: "语音", 4: "文件", 5: "视频" };
+    const typeName = typeNames[itemType] ?? "此类型";
+    log("route", `非文本消息 (type=${itemType ?? "?"}), 回复不支持提示`);
+    const ok = await sendMessage(account!, msg.from_user_id, msg.context_token,
+      `暂不支持${typeName}消息，请发送文本或链接。`);
     if (!ok) logError("send", "不支持提示发送失败");
     return;
   }
 
   log("route", `收到: [${msg.from_user_id.slice(0, 8)}] ${text.slice(0, 60)}`);
+
+  // Send processing confirmation for non-trivial operations
+  // (skip for simple commands like help, inbox, stats that respond fast)
+  const trimmed = text.trim();
+  const isQuickCommand = /^(?:帮助|help|\?|收件箱|inbox|通知|统计|stats|状态|论点|theses?|thesis\s*list|日报|digest|摘要|菜单|menu|命令)(?:\s+\d+)?$/i.test(trimmed)
+    || /^(?:搜索|search|找)\s/i.test(trimmed);
+  if (!isQuickCommand) {
+    sendMessage(account!, msg.from_user_id, msg.context_token, "收到，处理中...").catch(() => {});
+  }
 
   const inbound: InboundMessage = {
     session_id: msg.session_id,
@@ -276,6 +316,11 @@ async function handleMessage(msg: ILinkMessage, router: CommandRouter) {
 
 // --- Notification dispatch loop ---
 
+// Track recently pushed notification IDs to prevent duplicate sends
+// when deliverNotification fails but sendMessage succeeded.
+const recentlyPushed = new Map<string, number>();
+const PUSH_DEDUP_WINDOW_MS = 10 * 60 * 1000; // 10 minutes
+
 async function dispatchLoop(client: CortexClient) {
   log("system", `通知推送循环启动 (间隔 ${DISPATCH_INTERVAL_MS / 1000}s)`);
 
@@ -292,9 +337,23 @@ async function dispatchLoop(client: CortexClient) {
       const pending = await client.getDeliverableNotifications(5);
       if (pending.length === 0) continue;
 
+      // Evict expired dedup entries
+      const now = Date.now();
+      for (const [k, ts] of recentlyPushed) {
+        if (now - ts > PUSH_DEDUP_WINDOW_MS) recentlyPushed.delete(k);
+      }
+
       log("send", `推送 ${pending.length} 条通知给 ${recipient.user_id.slice(0, 8)}`);
 
       for (const notif of pending) {
+        // Skip if we already sent this notification recently
+        if (recentlyPushed.has(notif.id)) {
+          log("send", `通知 ${notif.short_id} 跳过 (已推送，等待投递确认)`);
+          // Retry deliverNotification in case it failed last time
+          await client.deliverNotification(notif.id).catch(() => {});
+          continue;
+        }
+
         const marker = notif.priority === "high" ? "!!!" : notif.priority === "medium" ? " ! " : "   ";
         const bodyLine = notif.body ? `\n${notif.body}` : "";
         const actions = [`确认 ${notif.short_id}`, `已读 ${notif.short_id}`, `忽略 ${notif.short_id}`];
@@ -309,12 +368,14 @@ async function dispatchLoop(client: CortexClient) {
         );
 
         if (ok) {
+          // Track as sent to prevent duplicate pushes
+          recentlyPushed.set(notif.id, Date.now());
           // Mark as delivered in Cortex
           const result = await client.deliverNotification(notif.id);
           if (result.ok) {
             log("send", `通知 ${notif.short_id} 推送并标记已投递`);
           } else {
-            logError("cortex_api", `通知 ${notif.short_id} 投递标记失败: ${result.error}`);
+            logError("cortex_api", `通知 ${notif.short_id} 投递标记失败 (已防重复): ${result.error}`);
           }
         } else {
           logError("send", `通知 ${notif.short_id} 推送发送失败`);

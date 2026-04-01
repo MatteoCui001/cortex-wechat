@@ -3,11 +3,11 @@
 # Usage: ./scripts/cortex-services.sh <command>
 #   install   — install launchd plists and create log directories
 #   uninstall — unload and remove launchd plists
-#   start     — load both services
-#   stop      — unload both services
+#   start     — load all services
+#   stop      — unload all services
 #   restart   — stop then start
 #   status    — show service status
-#   logs      — tail both service logs
+#   logs      — tail all service logs
 
 set -euo pipefail
 
@@ -17,8 +17,10 @@ LAUNCH_AGENTS="$HOME/Library/LaunchAgents"
 
 CORTEX_LABEL="com.cortex.serve"
 ILINK_LABEL="com.cortex.ilink-agent"
+DIGEST_LABEL="com.cortex.digest-cron"
 CORTEX_PLIST="$PLIST_DIR/$CORTEX_LABEL.plist"
 ILINK_PLIST="$PLIST_DIR/$ILINK_LABEL.plist"
+DIGEST_PLIST="$PLIST_DIR/$DIGEST_LABEL.plist"
 
 CORTEX_LOG_DIR="$HOME/Library/Logs/cortex"
 ILINK_LOG_DIR="$HOME/Library/Logs/cortex-wechat"
@@ -32,9 +34,11 @@ cmd_install() {
   mkdir -p "$LAUNCH_AGENTS"
   cp "$CORTEX_PLIST" "$LAUNCH_AGENTS/$CORTEX_LABEL.plist"
   cp "$ILINK_PLIST" "$LAUNCH_AGENTS/$ILINK_LABEL.plist"
+  cp "$DIGEST_PLIST" "$LAUNCH_AGENTS/$DIGEST_LABEL.plist"
   echo "Installed:"
   echo "  $LAUNCH_AGENTS/$CORTEX_LABEL.plist"
   echo "  $LAUNCH_AGENTS/$ILINK_LABEL.plist"
+  echo "  $LAUNCH_AGENTS/$DIGEST_LABEL.plist"
   echo ""
   echo "Run './scripts/cortex-services.sh start' to load services."
 }
@@ -42,9 +46,11 @@ cmd_install() {
 cmd_uninstall() {
   launchctl unload "$LAUNCH_AGENTS/$CORTEX_LABEL.plist" 2>/dev/null || true
   launchctl unload "$LAUNCH_AGENTS/$ILINK_LABEL.plist" 2>/dev/null || true
+  launchctl unload "$LAUNCH_AGENTS/$DIGEST_LABEL.plist" 2>/dev/null || true
   rm -f "$LAUNCH_AGENTS/$CORTEX_LABEL.plist"
   rm -f "$LAUNCH_AGENTS/$ILINK_LABEL.plist"
-  echo "Uninstalled both services."
+  rm -f "$LAUNCH_AGENTS/$DIGEST_LABEL.plist"
+  echo "Uninstalled all services."
 }
 
 cmd_start() {
@@ -60,6 +66,9 @@ cmd_start() {
   launchctl load "$LAUNCH_AGENTS/$ILINK_LABEL.plist" 2>/dev/null || true
   launchctl kickstart "gui/$uid/$ILINK_LABEL" 2>/dev/null || true
   echo "Started $ILINK_LABEL"
+  # digest-cron is calendar-based; load registers it with launchd (no kickstart needed)
+  launchctl load "$LAUNCH_AGENTS/$DIGEST_LABEL.plist" 2>/dev/null || true
+  echo "Loaded $DIGEST_LABEL (fires daily at 08:00)"
   echo ""
   cmd_status
 }
@@ -74,6 +83,8 @@ cmd_stop() {
   launchctl kill SIGTERM "gui/$uid/$CORTEX_LABEL" 2>/dev/null || true
   launchctl unload "$LAUNCH_AGENTS/$CORTEX_LABEL.plist" 2>/dev/null || true
   echo "Stopped $CORTEX_LABEL"
+  launchctl unload "$LAUNCH_AGENTS/$DIGEST_LABEL.plist" 2>/dev/null || true
+  echo "Unloaded $DIGEST_LABEL"
 }
 
 cmd_restart() {
@@ -131,15 +142,25 @@ cmd_status() {
     echo "           Last log: $(tail -1 "$ilink_log")"
   fi
 
+  # digest-cron
+  local digest_line
+  digest_line=$(launchctl list 2>/dev/null | grep "$DIGEST_LABEL" || true)
+  if [ -n "$digest_line" ]; then
+    echo "  [LOADED]  $DIGEST_LABEL (fires daily at 08:00)"
+  else
+    echo "  [STOPPED] $DIGEST_LABEL"
+  fi
+
   echo ""
   echo "Logs:"
-  echo "  Cortex:      $CORTEX_LOG_DIR/serve.log"
-  echo "  ilink-agent: $ILINK_LOG_DIR/ilink-agent.log"
+  echo "  Cortex:       $CORTEX_LOG_DIR/serve.log"
+  echo "  ilink-agent:  $ILINK_LOG_DIR/ilink-agent.log"
+  echo "  digest-cron:  $CORTEX_LOG_DIR/digest-cron.log"
 }
 
 cmd_logs() {
-  echo "Tailing Cortex + ilink-agent logs (Ctrl+C to stop)..."
-  tail -f "$CORTEX_LOG_DIR/serve.log" "$ILINK_LOG_DIR/ilink-agent.log" 2>/dev/null
+  echo "Tailing Cortex + ilink-agent + digest-cron logs (Ctrl+C to stop)..."
+  tail -f "$CORTEX_LOG_DIR/serve.log" "$ILINK_LOG_DIR/ilink-agent.log" "$CORTEX_LOG_DIR/digest-cron.log" 2>/dev/null
 }
 
 # --- Main ---

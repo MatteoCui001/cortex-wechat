@@ -68,7 +68,7 @@ export interface LLMConfig {
 /** Structured intent extracted by LLM router */
 export interface ParsedIntent {
   /** Recognized intent */
-  intent: "help" | "inbox" | "ack" | "read" | "dismiss" | "feedback" | "ingest_url" | "ingest_text";
+  intent: "help" | "menu" | "inbox" | "ack" | "read" | "dismiss" | "feedback" | "ingest_url" | "ingest_text" | "thesis_list" | "thesis_generate" | "thesis_confirm" | "thesis_evidence" | "search" | "digest" | "stats";
   /** Extracted URL, if any */
   url?: string;
   /** User's commentary / annotation on the URL */

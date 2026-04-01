@@ -1,66 +1,145 @@
 /**
- * Doctor / preflight check — verifies all prerequisites before running.
+ * Cortex Doctor — system health diagnostics.
+ * Run via: cortex doctor  (or: bun run start:ilink -- doctor)
  */
-import { existsSync, mkdirSync } from "fs";
-import { homedir } from "os";
-import { join } from "path";
-import { CortexClient } from "@cortex-wechat/core";
 
-const STATE_DIR = join(homedir(), ".cortex", "wechat");
-const ACCOUNT_PATH = join(STATE_DIR, "account.json");
+const CORTEX_BASE_URL = process.env.CORTEX_BASE_URL ?? "http://127.0.0.1:8420/api/v1";
+const ENV_FILE = `${process.env.HOME}/.cortex/env`;
+const ACCOUNT_PATH = `${process.env.HOME}/.cortex/wechat/account.json`;
 
-export interface DoctorResult {
-  ok: boolean;
-  checks: Record<string, { pass: boolean; detail: string }>;
+interface CheckResult {
+  name: string;
+  status: "ok" | "warn" | "fail";
+  detail: string;
 }
 
-export async function doctor(
-  cortexBaseUrl = "http://127.0.0.1:8420/api/v1",
-  workspace = "default",
-): Promise<DoctorResult> {
-  const checks: Record<string, { pass: boolean; detail: string }> = {};
-
-  // 1. Cortex API health
-  const client = new CortexClient({ base_url: cortexBaseUrl, workspace });
-  const healthy = await client.health();
-  checks.cortex_api = {
-    pass: healthy,
-    detail: healthy ? `可达: ${cortexBaseUrl}` : `不可达: ${cortexBaseUrl}`,
-  };
-
-  // 2. iLink account file
-  const hasAccount = existsSync(ACCOUNT_PATH);
-  checks.ilink_account = {
-    pass: hasAccount,
-    detail: hasAccount ? `已存在: ${ACCOUNT_PATH}` : `未找到: ${ACCOUNT_PATH} (需要 QR 扫码认证)`,
-  };
-
-  // 3. State directory writable
-  let dirOk = false;
+async function checkPostgres(): Promise<CheckResult> {
   try {
-    if (!existsSync(STATE_DIR)) mkdirSync(STATE_DIR, { recursive: true, mode: 0o700 });
-    dirOk = existsSync(STATE_DIR);
-  } catch { /* ignore */ }
-  checks.state_dir = {
-    pass: dirOk,
-    detail: dirOk ? `可写: ${STATE_DIR}` : `不可写: ${STATE_DIR}`,
-  };
-
-  const ok = Object.values(checks).every((c) => c.pass);
-  return { ok, checks };
+    const proc = Bun.spawnSync(["psql", "-d", "cortex", "-tAc", "SELECT count(*) FROM events"], {
+      timeout: 5000,
+    });
+    if (proc.exitCode === 0) {
+      const count = proc.stdout.toString().trim();
+      return { name: "PostgreSQL", status: "ok", detail: `Connected, ${count} events` };
+    }
+    return { name: "PostgreSQL", status: "fail", detail: `Exit code ${proc.exitCode}` };
+  } catch {
+    return { name: "PostgreSQL", status: "fail", detail: "psql not found or connection failed" };
+  }
 }
 
-/** CLI entry point for doctor */
-export async function runDoctorCli() {
-  const cortexBaseUrl = process.env.CORTEX_BASE_URL ?? "http://127.0.0.1:8420/api/v1";
-  const workspace = process.env.CORTEX_WORKSPACE ?? "default";
-  const result = await doctor(cortexBaseUrl, workspace);
-
-  console.log("\nCortex iLink Agent — Preflight Check\n");
-  for (const [name, check] of Object.entries(result.checks)) {
-    const icon = check.pass ? "PASS" : "FAIL";
-    console.log(`  [${icon}] ${name}: ${check.detail}`);
+async function checkAPI(): Promise<CheckResult> {
+  try {
+    const res = await fetch(`${CORTEX_BASE_URL}/health`, { signal: AbortSignal.timeout(5000) });
+    if (res.ok) return { name: "Cortex API", status: "ok", detail: `Healthy at ${CORTEX_BASE_URL}` };
+    return { name: "Cortex API", status: "fail", detail: `HTTP ${res.status}` };
+  } catch (e: any) {
+    return { name: "Cortex API", status: "fail", detail: e.message ?? "Connection refused" };
   }
-  console.log(`\n${result.ok ? "全部检查通过。" : "有检查未通过，请修复后重试。"}`);
-  process.exit(result.ok ? 0 : 1);
+}
+
+async function checkLLM(): Promise<CheckResult> {
+  try {
+    const res = await fetch(`${CORTEX_BASE_URL}/settings`, { signal: AbortSignal.timeout(5000) });
+    if (!res.ok) return { name: "LLM Config", status: "warn", detail: "Could not check settings" };
+    const data: any = await res.json();
+    if (data.llm?.configured) {
+      return { name: "LLM Config", status: "ok", detail: `Model: ${data.llm.model}` };
+    }
+    return { name: "LLM Config", status: "warn", detail: "Not configured — signals and entity extraction disabled" };
+  } catch {
+    return { name: "LLM Config", status: "warn", detail: "API not reachable" };
+  }
+}
+
+async function checkWeChat(): Promise<CheckResult> {
+  try {
+    const { existsSync, readFileSync, statSync } = await import("fs");
+    if (!existsSync(ACCOUNT_PATH)) {
+      return { name: "WeChat Session", status: "fail", detail: "No session file — run QR scan" };
+    }
+    const stat = statSync(ACCOUNT_PATH);
+    const age = Date.now() - stat.mtimeMs;
+    const days = Math.floor(age / 86400000);
+    const account = JSON.parse(readFileSync(ACCOUNT_PATH, "utf-8"));
+    if (days > 7) {
+      return { name: "WeChat Session", status: "warn", detail: `Session ${days}d old — may need re-scan` };
+    }
+    return { name: "WeChat Session", status: "ok", detail: `Bot ID: ${account.ilink_bot_id}, ${days}d old` };
+  } catch {
+    return { name: "WeChat Session", status: "fail", detail: "Could not read session file" };
+  }
+}
+
+async function checkEnv(): Promise<CheckResult> {
+  try {
+    const { existsSync, readFileSync } = await import("fs");
+    if (!existsSync(ENV_FILE)) {
+      return { name: "Environment", status: "fail", detail: `${ENV_FILE} not found` };
+    }
+    const content = readFileSync(ENV_FILE, "utf-8");
+    const hasToken = /CORTEX_API_TOKEN=".+"/.test(content);
+    const hasLLM = /LLM_API_KEY=".+"/.test(content) && !/LLM_API_KEY=""/.test(content);
+    if (!hasToken) return { name: "Environment", status: "fail", detail: "CORTEX_API_TOKEN not set" };
+    if (!hasLLM) return { name: "Environment", status: "warn", detail: "LLM_API_KEY not set (optional)" };
+    return { name: "Environment", status: "ok", detail: "Token and LLM key configured" };
+  } catch {
+    return { name: "Environment", status: "fail", detail: "Could not read env file" };
+  }
+}
+
+async function checkDisk(): Promise<CheckResult> {
+  try {
+    const proc = Bun.spawnSync(["df", "-h", process.env.HOME!], { timeout: 5000 });
+    const lines = proc.stdout.toString().split("\n");
+    if (lines.length >= 2) {
+      const parts = lines[1].split(/\s+/);
+      const used = parts[4]; // e.g., "85%"
+      const pct = parseInt(used);
+      if (pct > 90) return { name: "Disk Space", status: "warn", detail: `${used} used — consider cleanup` };
+      return { name: "Disk Space", status: "ok", detail: `${used} used, ${parts[3]} available` };
+    }
+    return { name: "Disk Space", status: "ok", detail: "Could not parse" };
+  } catch {
+    return { name: "Disk Space", status: "ok", detail: "Check skipped" };
+  }
+}
+
+export async function doctor(): Promise<CheckResult[]> {
+  return Promise.all([
+    checkEnv(),
+    checkPostgres(),
+    checkAPI(),
+    checkLLM(),
+    checkWeChat(),
+    checkDisk(),
+  ]);
+}
+
+export async function runDoctorCli() {
+  const RED = "\x1b[31m";
+  const GREEN = "\x1b[32m";
+  const YELLOW = "\x1b[33m";
+  const BOLD = "\x1b[1m";
+  const NC = "\x1b[0m";
+
+  console.log(`\n${BOLD}Cortex Doctor${NC}\n`);
+
+  const results = await doctor();
+  let hasIssue = false;
+
+  for (const r of results) {
+    const icon = r.status === "ok" ? `${GREEN}✓${NC}` : r.status === "warn" ? `${YELLOW}!${NC}` : `${RED}✗${NC}`;
+    console.log(`  ${icon} ${BOLD}${r.name}${NC}: ${r.detail}`);
+    if (r.status !== "ok") hasIssue = true;
+  }
+
+  console.log("");
+  if (hasIssue) {
+    console.log(`${YELLOW}Some checks need attention.${NC}`);
+  } else {
+    console.log(`${GREEN}All systems healthy.${NC}`);
+  }
+
+  process.exit(hasIssue ? 1 : 0);
 }
