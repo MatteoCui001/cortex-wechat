@@ -122,7 +122,7 @@ export class IntentExtractor {
 
   constructor(config: LLMConfig) {
     this.config = config;
-    this.model = config.model ?? "anthropic/claude-haiku-4.5";
+    this.model = config.model ?? "MiniMax-M2.7";
     this.timeoutMs = config.timeout_ms ?? DEFAULT_TIMEOUT_MS;
   }
 

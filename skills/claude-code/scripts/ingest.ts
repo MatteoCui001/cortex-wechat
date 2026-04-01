@@ -3,13 +3,9 @@
  * Cortex ingest — submit content or URL to Cortex via CLI.
  * Used as a Claude Code skill script.
  */
-import { CortexClient } from "../../../packages/core/src/cortex-client";
-import type { CortexConfig } from "../../../packages/core/src/types";
+import { CortexClient, loadConfig } from "../../../packages/core/src/index";
 
-const config: CortexConfig = {
-  base_url: process.env.CORTEX_BASE_URL ?? "http://127.0.0.1:8420/api/v1",
-  workspace: process.env.CORTEX_WORKSPACE ?? "default",
-};
+const config = loadConfig();
 
 const args = process.argv.slice(2);
 let url: string | undefined;

@@ -255,7 +255,14 @@ export class CommandRouter {
       return reply;
     }
 
-    // 9. Plain text ingest
+    // 9. Cross-message URL context — check if this is commentary on a recent URL
+    const sessionKey = MessageHistory.keyFor(msg);
+    const recentUrl = this.history.findRecentUrl(sessionKey);
+    if (recentUrl) {
+      return this.handleIngest(reply, { url: recentUrl, annotation: text });
+    }
+
+    // 10. Plain text ingest
     return this.handleIngest(reply, { content: text });
   }
 

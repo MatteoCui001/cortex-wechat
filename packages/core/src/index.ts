@@ -6,6 +6,7 @@ export { CommandRouter } from "./router";
 export type { RouterOptions } from "./router";
 export { IntentExtractor, MessageHistory, type LLMFailReason } from "./intent-extractor";
 export { splitReply } from "./reply-formatter";
+export { loadConfig, loadLLMConfig } from "./config";
 export type {
   InboundMessage,
   OutboundReply,

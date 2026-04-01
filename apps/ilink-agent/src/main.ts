@@ -7,8 +7,8 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
-import { CommandRouter, CortexClient, splitReply } from "@cortex-wechat/core";
-import type { InboundMessage, LLMConfig } from "@cortex-wechat/core";
+import { CommandRouter, CortexClient, splitReply, loadConfig, loadLLMConfig } from "@cortex-wechat/core";
+import type { InboundMessage } from "@cortex-wechat/core";
 import {
   type ILinkAccount,
   type ILinkMessage,
@@ -42,8 +42,6 @@ const ACCOUNT_PATH = join(STATE_DIR, "account.json");
 const CURSOR_PATH = join(STATE_DIR, "cursor.txt");
 const DEDUP_PATH = join(STATE_DIR, "seen_ids.json");
 
-const CORTEX_BASE_URL = process.env.CORTEX_BASE_URL ?? "http://127.0.0.1:8420/api/v1";
-const CORTEX_WORKSPACE = process.env.CORTEX_WORKSPACE ?? "default";
 const DISPATCH_INTERVAL_MS = Number(process.env.DISPATCH_INTERVAL_MS) || 60_000; // 1 min default
 
 // Sender whitelist — enforced via env var or auto-lock on first message.
@@ -72,21 +70,7 @@ function autoLockSender(userId: string) {
   log("auth", `首次消息，已自动锁定授权用户: ${userId.slice(0, 8)}...`);
 }
 
-// LLM semantic routing — optional, falls back to regex when absent
-const LLM_BASE_URL = process.env.LLM_BASE_URL;
-const LLM_API_KEY = process.env.LLM_API_KEY;
-const LLM_MODEL = process.env.LLM_MODEL;
-const LLM_TIMEOUT_MS = Number(process.env.LLM_TIMEOUT_MS) || 6000;
-
-function buildLLMConfig(): LLMConfig | undefined {
-  if (!LLM_BASE_URL || !LLM_API_KEY) return undefined;
-  return {
-    base_url: LLM_BASE_URL,
-    api_key: LLM_API_KEY,
-    model: LLM_MODEL,
-    timeout_ms: LLM_TIMEOUT_MS,
-  };
-}
+// LLM semantic routing — loaded from env via core loadLLMConfig()
 
 // --- State ---
 
@@ -409,22 +393,19 @@ async function main() {
   }
 
   // Preflight: check Cortex health
-  const client = new CortexClient({
-    base_url: CORTEX_BASE_URL,
-    workspace: CORTEX_WORKSPACE,
-    api_token: process.env.CORTEX_API_TOKEN,
-  });
+  const cortexConfig = loadConfig();
+  const client = new CortexClient(cortexConfig);
 
   const healthy = await client.health();
   if (!healthy) {
-    log("system", `警告: Cortex API (${CORTEX_BASE_URL}) 无法连接`);
+    log("system", `警告: Cortex API (${cortexConfig.base_url}) 无法连接`);
     log("system", "恢复动作: 确保 Cortex 已启动 (cd ~/Projects/cortex && make serve)");
     log("system", "继续运行，但消息处理可能失败...");
   } else {
-    log("cortex_api", `连接正常: ${CORTEX_BASE_URL}`);
+    log("cortex_api", `连接正常: ${cortexConfig.base_url}`);
   }
 
-  const llmConfig = buildLLMConfig();
+  const llmConfig = loadLLMConfig();
   const router = new CommandRouter(client, llmConfig ? { llm: llmConfig } : undefined);
 
   if (router.llmEnabled) {

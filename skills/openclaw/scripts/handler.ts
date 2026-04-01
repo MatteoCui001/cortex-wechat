@@ -1,24 +1,23 @@
 #!/usr/bin/env bun
 /**
- * OpenClaw adapter — reads JSON from stdin, routes through core, writes JSON to stdout.
+ * [LEGACY] OpenClaw adapter — reads JSON from stdin, routes through core, writes JSON to stdout.
+ *
+ * This file is NOT called by the OpenClaw skill mechanism. OpenClaw injects SKILL.md
+ * into the LLM context and the LLM executes curl commands directly.
+ * See PROTOCOL_PROPOSAL.md for details.
+ *
+ * Retained as reference implementation and for handler.test.ts contract tests.
  *
  * stdin contract:
  *   { text, user_id, session_id, message_id, context_token? }
  *
  * stdout contract:
  *   { reply_text, actions_taken, pending_notifications, errors }
- *
- * NOTE: The exact invocation protocol of OpenClaw is not yet confirmed.
- * This script implements the stdin/stdout JSON contract as a reasonable default.
- * When the actual protocol is confirmed, only this file needs to change.
  */
-import { CommandRouter, CortexClient } from "../../../packages/core/src/index";
-import type { CortexConfig, InboundMessage } from "../../../packages/core/src/types";
+import { CommandRouter, CortexClient, loadConfig } from "../../../packages/core/src/index";
+import type { InboundMessage } from "../../../packages/core/src/types";
 
-const config: CortexConfig = {
-  base_url: process.env.CORTEX_BASE_URL ?? "http://127.0.0.1:8420/api/v1",
-  workspace: process.env.CORTEX_WORKSPACE ?? "default",
-};
+const config = loadConfig();
 
 // Read stdin
 const input = await Bun.stdin.text();
